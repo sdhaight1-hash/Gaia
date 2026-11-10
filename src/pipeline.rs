@@ -1,6 +1,7 @@
 //! Typed, multi-output terrain graph evaluation with incremental node caching.
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
+use crate::hydrology::simulate;
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
@@ -268,8 +269,17 @@ impl NodeKind {
             ("wear", PortType::Mask),
             ("deposits", PortType::Mask),
         ];
+        const HYDRAULIC: &[(&str, PortType)] = &[
+            ("height", PortType::Height),
+            ("wear", PortType::Mask),
+            ("deposits", PortType::Mask),
+            ("flow", PortType::Mask),
+            ("water", PortType::Water),
+            ("sediment", PortType::Mask),
+        ];
         match self {
             Self::Erosion { .. } => EROSION,
+            Self::Hydraulic { .. } => HYDRAULIC,
             Self::Slope => SLOPE,
             _ => HEIGHT,
         }
@@ -281,7 +291,7 @@ impl NodeKind {
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -314,6 +324,16 @@ fn evaluate_kind(
                 .with("height", PortType::Height, data.height)
                 .with("wear", PortType::Mask, data.wear)
                 .with("deposits", PortType::Mask, data.deposits)
+        }
+        NodeKind::Hydraulic { params } => {
+            let state = simulate(take(0), *params, &cancelled)?;
+            NodeOutputs::default()
+                .with("height", PortType::Height, state.height)
+                .with("wear", PortType::Mask, state.wear)
+                .with("deposits", PortType::Mask, state.deposits)
+                .with("flow", PortType::Mask, state.flow)
+                .with("water", PortType::Water, state.water)
+                .with("sediment", PortType::Mask, state.sediment)
         }
         NodeKind::Terrace { steps, softness } => NodeOutputs::default()
             .with("height", PortType::Height, terrace(take(0), *steps, *softness)),
@@ -449,6 +469,27 @@ mod tests {
         cache.evaluate(&p.graph, 64, &PortRef::height(3)).unwrap();
         assert_eq!(cache.stats.computed, 1);
         assert_eq!(cache.stats.reused, 2);
+    }
+
+    #[test]
+    fn hydraulic_node_exposes_conserved_independent_fields() {
+        use crate::hydrology::HydraulicParameters;
+        let mut p = Project::default();
+        let id = p.graph.add(NodeKind::Hydraulic {
+            params: HydraulicParameters::default(),
+        });
+        // Hydraulics consumes the original generator for this test.
+        p.graph.nodes.iter_mut().find(|node| node.id == id).unwrap().inputs =
+            vec![PortRef::height(1)];
+        let height = p.graph.evaluate_port(64, &PortRef::height(id)).unwrap();
+        let flow = p.graph.evaluate_port(64, &PortRef::new(id, "flow")).unwrap();
+        let water = p.graph.evaluate_port(64, &PortRef::new(id, "water")).unwrap();
+        assert_eq!(height.kind, PortType::Height);
+        assert_eq!(flow.kind, PortType::Mask);
+        assert_eq!(water.kind, PortType::Water);
+        assert!(flow.data.values.iter().any(|&v| v > 0.0));
+        assert!(water.data.values.iter().all(|v| *v >= 0.0));
+        assert!(height.data.values.iter().all(|v| v.is_finite()));
     }
 
     #[test]
