@@ -1,6 +1,5 @@
-//! Native GPU terrain preview. Uses egui's wgpu render pass and a custom shader.
-//! The first vertical slice depth-sorts heightfield cells because the egui pass
-//! has no depth attachment. A dedicated depth-buffered pass is a later milestone.
+//! True depth-tested wgpu preview, rendered offscreen and composited into egui.
+//! Camera movement is uniform-only: do not rebuild or sort the mesh on orbit.
 use gaia::terrain::HeightField;
 use bytemuck::{Pod, Zeroable};
 use eframe::{
@@ -19,6 +18,17 @@ struct Vertex {
     color: [f32; 3],
 }
 
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+
+struct Offscreen {
+    dimensions: [u32; 2],
+    _color: wgpu::Texture,
+    color_view: wgpu::TextureView,
+    _depth: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    composite_bind: wgpu::BindGroup,
+}
+
 struct TerrainRenderResources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
@@ -26,6 +36,11 @@ struct TerrainRenderResources {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
+    composite_pipeline: wgpu::RenderPipeline,
+    composite_layout: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+    format: wgpu::TextureFormat,
+    offscreen: Option<Offscreen>,
 }
 
 pub fn eye_position(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
@@ -43,7 +58,7 @@ pub fn view_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> [f32; 16
     (proj * view).to_cols_array()
 }
 
-fn mesh(field: &HeightField, eye: Vec3) -> (Vec<Vertex>, Vec<u32>) {
+fn mesh(field: &HeightField) -> (Vec<Vertex>, Vec<u32>) {
     let n = field.size;
     let mut vertices = Vec::with_capacity(n * n);
     let step = 2.0 / (n - 1) as f32;
@@ -74,30 +89,25 @@ fn mesh(field: &HeightField, eye: Vec3) -> (Vec<Vertex>, Vec<u32>) {
             });
         }
     }
-    let mut cells = Vec::with_capacity((n - 1) * (n - 1));
+    let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for y in 0..n - 1 {
         for x in 0..n - 1 {
             let a = (y * n + x) as u32;
             let b = a + 1;
             let c = a + n as u32;
             let d = c + 1;
-            let centroid = (Vec3::from_array(vertices[a as usize].position)
-                + Vec3::from_array(vertices[d as usize].position)) * 0.5;
-            let depth = centroid.distance_squared(eye);
-            cells.push((depth, [a, c, b, b, c, d]));
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
         }
     }
-    cells.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-    let indices = cells.into_iter().flat_map(|(_, cell)| cell).collect();
     (vertices, indices)
 }
 
 fn upload_buffers(
     device: &wgpu::Device,
     field: &HeightField,
-    eye: Vec3,
+    _eye: Vec3,
 ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    let (vertices, indices): (Vec<Vertex>, Vec<u32>) = mesh(field, eye);
+    let (vertices, indices): (Vec<Vertex>, Vec<u32>) = mesh(field);
     let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Gaia terrain vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -161,7 +171,13 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
             cull_mode: None,
             ..Default::default()
         },
-        depth_stencil: None,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
@@ -179,9 +195,69 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
             resource: uniform.as_entire_binding(),
         }],
     });
+    let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Gaia texture composite shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
+    });
+    let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Gaia composite texture layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Gaia composite pipeline layout"),
+        bind_group_layouts: &[Some(&composite_layout)],
+        immediate_size: 0,
+    });
+    let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Gaia offscreen composite pipeline"),
+        layout: Some(&composite_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &composite_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &composite_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(render_state.target_format.into())],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Gaia composite sampler"),
+        min_filter: wgpu::FilterMode::Linear,
+        mag_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
     let (vertices, indices, index_count) = upload_buffers(device, field, eye);
     render_state.renderer.write().callback_resources.insert(TerrainRenderResources {
         pipeline, bind_group, uniform, vertices, indices, index_count,
+        composite_pipeline, composite_layout, composite_sampler,
+        format: render_state.target_format,
+        offscreen: None,
     });
 }
 
@@ -196,21 +272,103 @@ pub fn upload(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: V
     }
 }
 
+impl TerrainRenderResources {
+    fn ensure_target(&mut self, device: &wgpu::Device, pixels: [u32; 2]) {
+        let dimensions = [pixels[0].max(1), pixels[1].max(1)];
+        if self.offscreen.as_ref().is_some_and(|target| target.dimensions == dimensions) {
+            return;
+        }
+        let size = wgpu::Extent3d {
+            width: dimensions[0], height: dimensions[1], depth_or_array_layers: 1,
+        };
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Gaia terrain offscreen color"),
+            size, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Gaia terrain depth"),
+            size, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let composite_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Gaia offscreen color sampler bind"),
+            layout: &self.composite_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
+                },
+            ],
+        });
+        self.offscreen = Some(Offscreen {
+            dimensions, _color: color, color_view,
+            _depth: depth, depth_view, composite_bind,
+        });
+    }
+}
+
 pub struct TerrainCallback {
     pub camera: [f32; 16],
+    pub pixels: [u32; 2],
 }
 
 impl egui_wgpu::CallbackTrait for TerrainCallback {
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen_descriptor: &egui_wgpu::ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        if let Some(state) = resources.get::<TerrainRenderResources>() {
+        if let Some(state) = resources.get_mut::<TerrainRenderResources>() {
             queue.write_buffer(&state.uniform, 0, bytemuck::cast_slice(&self.camera));
+            state.ensure_target(device, self.pixels);
+            if let Some(target) = &state.offscreen {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Gaia depth-tested offscreen pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target.color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.038, g: 0.057, b: 0.075, a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &target.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&state.pipeline);
+                pass.set_bind_group(0, &state.bind_group, &[]);
+                pass.set_vertex_buffer(0, state.vertices.slice(..));
+                pass.set_index_buffer(state.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..state.index_count, 0, 0..1);
+            }
         }
         Vec::new()
     }
@@ -222,11 +380,24 @@ impl egui_wgpu::CallbackTrait for TerrainCallback {
         resources: &egui_wgpu::CallbackResources,
     ) {
         if let Some(state) = resources.get::<TerrainRenderResources>() {
-            pass.set_pipeline(&state.pipeline);
-            pass.set_bind_group(0, &state.bind_group, &[]);
-            pass.set_vertex_buffer(0, state.vertices.slice(..));
-            pass.set_index_buffer(state.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..state.index_count, 0, 0..1);
+            if let Some(target) = &state.offscreen {
+                pass.set_pipeline(&state.composite_pipeline);
+                pass.set_bind_group(0, &target.composite_bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terrain_mesh_is_two_triangles_per_cell() {
+        let terrain = HeightField::flat(32, 0.4);
+        let (vertices, indices) = mesh(&terrain);
+        assert_eq!(vertices.len(), 32 * 32);
+        assert_eq!(indices.len(), 31 * 31 * 6);
     }
 }
