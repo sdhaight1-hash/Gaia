@@ -1,5 +1,7 @@
 //! Dedicated cancellable background evaluator. The GUI never waits for erosion.
-use crate::pipeline::{GraphCache, PortRef, PortType};
+use crate::pipeline::{BlendCompute, GraphCache, PortRef, PortType};
+use crate::gpu_compute::GpuBlend;
+use eframe::egui_wgpu::wgpu;
 use crate::terrain::{HeightField, Project};
 use std::sync::{
     Arc, mpsc::{self, Receiver, Sender, TryRecvError},
@@ -42,6 +44,14 @@ impl Default for GraphWorker {
 
 impl GraphWorker {
     pub fn new() -> Self {
+        Self::spawn(None)
+    }
+
+    pub fn with_gpu(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self::spawn(Some(Arc::new(GpuBlend::new(device, queue))))
+    }
+
+    fn spawn(backend: Option<Arc<dyn BlendCompute>>) -> Self {
         let (request_tx, request_rx) = mpsc::channel::<Request>();
         let (result_tx, result_rx) = mpsc::channel::<WorkResult>();
         let generation = Arc::new(AtomicU64::new(0));
@@ -50,6 +60,7 @@ impl GraphWorker {
             .name("gaia-graph-worker".to_string())
             .spawn(move || {
                 let mut cache = GraphCache::default();
+                cache.set_backend(backend);
                 while let Ok(mut request) = request_rx.recv() {
                     // Drop requests superseded before this worker started.
                     while let Ok(newest) = request_rx.try_recv() {
