@@ -1,0 +1,21 @@
+name: Rust CI
+on:
+  push:
+    branches: [main, feat/terrain-editor-foundation]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Type-check all targets
+        run: cargo check --all-targets
+      - name: Unit tests (determinism, graph validation, conservation)
+        run: cargo test --lib
