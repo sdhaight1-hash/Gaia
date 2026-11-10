@@ -1,6 +1,7 @@
 //! Deterministic, CPU-side heightfield graph. No GPU or UI dependencies.
 use serde::{Deserialize, Serialize};
 use crate::pipeline::PortRef;
+use crate::hydrology::HydraulicParameters;
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
