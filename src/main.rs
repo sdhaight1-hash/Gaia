@@ -31,7 +31,11 @@ impl GaiaApp {
         let project = Project::default();
         let field = project.graph.evaluate(project.resolution)
             .expect("default terrain project must evaluate");
-        let worker = GraphWorker::new();
+        let worker = if let Some(state) = &cc.wgpu_render_state {
+            GraphWorker::with_gpu(state.device.clone(), state.queue.clone())
+        } else {
+            GraphWorker::new()
+        };
         let preview_source = PortRef::height(project.graph.output);
         let yaw = 0.85;
         let pitch = 0.72;
