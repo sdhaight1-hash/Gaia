@@ -1,6 +1,6 @@
 //! Deterministic, CPU-side heightfield graph. No GPU or UI dependencies.
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use crate::pipeline::PortRef;
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -31,6 +31,8 @@ pub enum NodeKind {
     Terrace { steps: u32, softness: f32 },
     Blur { radius: u32 },
     Blend { mix: f32 },
+    Slope,
+    MaskedBlend { mix: f32 },
 }
 
 impl NodeKind {
@@ -42,6 +44,8 @@ impl NodeKind {
             Self::Terrace { .. } => "Terrace",
             Self::Blur { .. } => "Blur",
             Self::Blend { .. } => "Blend",
+            Self::Slope => "Slope mask",
+            Self::MaskedBlend { .. } => "Masked Blend",
         }
     }
 
@@ -49,6 +53,7 @@ impl NodeKind {
         match self {
             Self::Mountain { .. } | Self::Noise { .. } => 0,
             Self::Blend { .. } => 2,
+            Self::MaskedBlend { .. } => 3,
             _ => 1,
         }
     }
@@ -58,7 +63,7 @@ impl NodeKind {
 pub struct Node {
     pub id: u64,
     pub kind: NodeKind,
-    pub inputs: Vec<u64>,
+    pub inputs: Vec<PortRef>,
     pub position: [f32; 2],
 }
 
@@ -89,13 +94,13 @@ impl Default for Project {
                     Node {
                         id: 2,
                         kind: NodeKind::Erosion { iterations: 24, talus: 0.008, strength: 0.28 },
-                        inputs: vec![1],
+                        inputs: vec![PortRef::height(1)],
                         position: [265.0, 90.0],
                     },
                     Node {
                         id: 3,
                         kind: NodeKind::Terrace { steps: 12, softness: 0.75 },
-                        inputs: vec![2],
+                        inputs: vec![PortRef::height(2)],
                         position: [495.0, 90.0],
                     },
                 ],
@@ -114,94 +119,38 @@ impl Graph {
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
         let inputs = match kind.input_count() {
             0 => vec![],
-            1 => vec![self.output],
-            _ => vec![self.output, 1],
+            1 => vec![PortRef::height(self.output)],
+            2 => vec![PortRef::height(self.output), PortRef::height(1)],
+            3 => {
+                let mask = self.nodes.iter().rev().find_map(|node| {
+                    node.kind.output_ports().iter()
+                        .find(|(_, ty)| *ty == crate::pipeline::PortType::Mask)
+                        .map(|(name, _)| PortRef::new(node.id, *name))
+                }).unwrap_or_else(|| PortRef::new(self.output, "wear"));
+                vec![PortRef::height(self.output), PortRef::height(1), mask]
+            }
+            _ => unreachable!("all node kinds have up to three inputs"),
         };
-        let position = [65.0 + (self.nodes.len() % 4) as f32 * 200.0,
-                        205.0 + (self.nodes.len() / 4) as f32 * 115.0];
+        let position = [
+            65.0 + (self.nodes.len() % 4) as f32 * 220.0,
+            205.0 + (self.nodes.len() / 4) as f32 * 115.0,
+        ];
+        let has_height = kind.output_ports().iter()
+            .any(|(name, _)| *name == "height");
         self.nodes.push(Node { id, kind, inputs, position });
-        self.output = id;
+        if has_height {
+            self.output = id;
+        }
         id
     }
 
+    /// Backwards-compatible heightfield-only entry point.
     pub fn evaluate(&self, resolution: usize) -> Result<HeightField, String> {
-        if !(32..=512).contains(&resolution) {
-            return Err("Resolution must be between 32 and 512".to_string());
+        let output = self.evaluate_port(resolution, &PortRef::height(self.output))?;
+        if output.kind != crate::pipeline::PortType::Height {
+            return Err("Project output is not a heightfield".to_owned());
         }
-        if self.nodes.len() > 256 {
-            return Err("Project exceeds 256 nodes".to_string());
-        }
-        let mut cache = HashMap::new();
-        let mut visiting = HashSet::new();
-        self.eval_node(self.output, resolution, &mut cache, &mut visiting)
-    }
-
-    fn eval_node(
-        &self,
-        id: u64,
-        size: usize,
-        cache: &mut HashMap<u64, HeightField>,
-        visiting: &mut HashSet<u64>,
-    ) -> Result<HeightField, String> {
-        if let Some(field) = cache.get(&id) {
-            return Ok(field.clone());
-        }
-        if !visiting.insert(id) {
-            return Err(format!("Graph cycle detected at node {id}"));
-        }
-        let result = (|| {
-            let node = self.get(id).ok_or_else(|| format!("Missing node {id}"))?;
-            if node.inputs.len() != node.kind.input_count() {
-                return Err(format!("{} requires {} inputs", node.kind.label(), node.kind.input_count()));
-            }
-            let sources = node.inputs.iter().map(|src| {
-                self.eval_node(*src, size, cache, visiting)
-            }).collect::<Result<Vec<_>, _>>()?;
-            let output = match &node.kind {
-                NodeKind::Mountain { seed, frequency, height } => {
-                    generate_mountain(size, *seed, *frequency, *height)
-                }
-                NodeKind::Noise { seed, frequency, amplitude } => {
-                    generate_noise(size, *seed, *frequency, *amplitude)
-                }
-                NodeKind::Erosion { iterations, talus, strength } => {
-                    thermal_erosion(&sources[0], (*iterations).min(200), *talus, *strength)
-                }
-                NodeKind::Terrace { steps, softness } => {
-                    terrace(&sources[0], *steps, *softness)
-                }
-                NodeKind::Blur { radius } => blur(&sources[0], *radius),
-                NodeKind::Blend { mix } => {
-                    let mut h = sources[0].clone();
-                    for (dest, src) in h.values.iter_mut().zip(&sources[1].values) {
-                        *dest = *dest * (1.0 - mix.clamp(0.0, 1.0)) + src * mix.clamp(0.0, 1.0);
-                    }
-                    h
-                }
-            };
-            if output.values.iter().any(|v| !v.is_finite()) {
-                return Err(format!("Node {id} produced non-finite terrain"));
-            }
-            Ok(output)
-        })();
-        visiting.remove(&id);
-        let output = result?;
-        cache.insert(id, output.clone());
-        Ok(output)
-    }
-}
-
-impl Project {
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, data).map_err(|e| e.to_string())
-    }
-
-    pub fn load(path: &Path) -> Result<Self, String> {
-        let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let project: Self = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-        project.graph.evaluate(project.resolution)?;
-        Ok(project)
+        Ok((*output.data).clone())
     }
 }
 
@@ -245,7 +194,7 @@ fn fractal(x: f32, y: f32, seed: u32, frequency: f32) -> f32 {
     sum / norm
 }
 
-fn generate_noise(size: usize, seed: u32, frequency: f32, amplitude: f32) -> HeightField {
+pub(crate) fn generate_noise(size: usize, seed: u32, frequency: f32, amplitude: f32) -> HeightField {
     let mut out = HeightField::flat(size, 0.0);
     for y in 0..size {
         for x in 0..size {
@@ -257,7 +206,7 @@ fn generate_noise(size: usize, seed: u32, frequency: f32, amplitude: f32) -> Hei
     out
 }
 
-fn generate_mountain(size: usize, seed: u32, frequency: f32, height: f32) -> HeightField {
+pub(crate) fn generate_mountain(size: usize, seed: u32, frequency: f32, height: f32) -> HeightField {
     let mut out = HeightField::flat(size, 0.0);
     for y in 0..size {
         for x in 0..size {
@@ -279,17 +228,35 @@ fn generate_mountain(size: usize, seed: u32, frequency: f32, height: f32) -> Hei
 
 /// A finite-volume talus relaxation: each cell only transfers its own material
 /// to downhill cardinal neighbors. Every transfer is added and subtracted once.
+/// Conservative thermal erosion and its true cumulative transport masks.
+pub struct ErosionFields {
+    pub height: HeightField,
+    pub wear: HeightField,
+    pub deposits: HeightField,
+}
+
 pub fn thermal_erosion(input: &HeightField, iterations: u32, talus: f32, strength: f32) -> HeightField {
-    let mut h = input.clone();
-    let size = h.size;
+    thermal_erosion_fields(input, iterations, talus, strength).height
+}
+
+/// Cumulative wear/deposits record all material leaving/entering each cell
+/// at each step. Wear can exceed net height loss where material is repeatedly
+/// mobilized. This is thermal talus transport, NOT rainfall-driven erosion.
+pub fn thermal_erosion_fields(
+    input: &HeightField, iterations: u32, talus: f32, strength: f32,
+) -> ErosionFields {
+    let mut height = input.clone();
+    let size = height.size;
+    let mut wear = HeightField::flat(size, 0.0);
+    let mut deposits = HeightField::flat(size, 0.0);
     let talus = talus.clamp(0.0, 1.0);
     let strength = strength.clamp(0.0, 0.5);
     for _ in 0..iterations {
-        let mut delta = vec![0.0_f32; h.values.len()];
+        let mut delta = vec![0.0_f32; height.values.len()];
         for y in 0..size {
             for x in 0..size {
                 let index = y * size + x;
-                let current = h.values[index];
+                let current = height.values[index];
                 let neighbors = [
                     (x.wrapping_sub(1), y, x > 0),
                     (x + 1, y, x + 1 < size),
@@ -300,31 +267,34 @@ pub fn thermal_erosion(input: &HeightField, iterations: u32, talus: f32, strengt
                 let mut total_excess = 0.0;
                 for (i, &(nx, ny, valid)) in neighbors.iter().enumerate() {
                     if valid {
-                        let ni = ny * size + nx;
-                        let excess = (current - h.values[ni] - talus).max(0.0);
-                        flows[i] = (ni, excess);
+                        let neighbor = ny * size + nx;
+                        let excess = (current - height.values[neighbor] - talus).max(0.0);
+                        flows[i] = (neighbor, excess);
                         total_excess += excess;
                     }
                 }
                 if total_excess > 0.0 {
                     let amount = (strength * total_excess).min(current.max(0.0) * 0.45);
                     delta[index] -= amount;
-                    for (ni, excess) in flows {
+                    wear.values[index] += amount;
+                    for (neighbor, excess) in flows {
                         if excess > 0.0 {
-                            delta[ni] += amount * (excess / total_excess);
+                            let transferred = amount * (excess / total_excess);
+                            delta[neighbor] += transferred;
+                            deposits.values[neighbor] += transferred;
                         }
                     }
                 }
             }
         }
-        for (value, change) in h.values.iter_mut().zip(delta) {
+        for (value, change) in height.values.iter_mut().zip(delta) {
             *value += change;
         }
     }
-    h
+    ErosionFields { height, wear, deposits }
 }
 
-fn terrace(input: &HeightField, steps: u32, softness: f32) -> HeightField {
+pub(crate) fn terrace(input: &HeightField, steps: u32, softness: f32) -> HeightField {
     let steps = steps.clamp(2, 128) as f32;
     let softness = softness.clamp(0.0, 1.0);
     let mut out = input.clone();
@@ -337,7 +307,7 @@ fn terrace(input: &HeightField, steps: u32, softness: f32) -> HeightField {
     out
 }
 
-fn blur(input: &HeightField, radius: u32) -> HeightField {
+pub(crate) fn blur(input: &HeightField, radius: u32) -> HeightField {
     let radius = radius.clamp(1, 8) as isize;
     let size = input.size as isize;
     let mut out = input.clone();
@@ -423,14 +393,14 @@ mod tests {
     #[test]
     fn missing_input_is_rejected() {
         let mut p = Project::default();
-        p.graph.nodes[1].inputs = vec![999];
+        p.graph.nodes[1].inputs = vec![PortRef::height(999)];
         assert!(p.graph.evaluate(64).unwrap_err().contains("Missing node"));
     }
 
     #[test]
     fn graph_cycle_is_rejected() {
         let mut p = Project::default();
-        p.graph.nodes[1].inputs = vec![3];
+        p.graph.nodes[1].inputs = vec![PortRef::height(3)];
         assert!(p.graph.evaluate(64).unwrap_err().contains("cycle"));
     }
 
