@@ -134,6 +134,56 @@ impl Graph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    /// Connect a named source output to a typed target input.
+    /// Reject invalid ports, bad slots, self-links and cyclic dependencies
+    /// before modifying the graph.
+    pub fn connect(
+        &mut self,
+        target: u64,
+        slot: usize,
+        source: PortRef,
+    ) -> Result<(), String> {
+        let source_node = self.get(source.node)
+            .ok_or_else(|| format!("Missing source node #{}", source.node))?;
+        let source_type = source_node.kind.output_ports().iter()
+            .find(|(name, _)| *name == source.port)
+            .map(|(_, ty)| *ty)
+            .ok_or_else(|| format!(
+                "Node #{} has no output '{}'", source.node, source.port
+            ))?;
+        let target_node = self.get(target)
+            .ok_or_else(|| format!("Missing target node #{target}"))?;
+        let target_type = target_node.kind.input_type(slot)
+            .ok_or_else(|| format!("Node #{target} has no input {slot}"))?;
+        if source_type != target_type {
+            return Err(format!(
+                "Cannot connect {} to {} input", source_type.label(),
+                target_type.label()
+            ));
+        }
+        if target == source.node {
+            return Err("Cannot connect a node to itself".to_owned());
+        }
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![source.node];
+        while let Some(node_id) = stack.pop() {
+            if node_id == target {
+                return Err("Connection would create a graph cycle".to_owned());
+            }
+            if !visited.insert(node_id) {
+                continue;
+            }
+            let node = self.get(node_id)
+                .ok_or_else(|| format!("Missing dependency node #{node_id}"))?;
+            stack.extend(node.inputs.iter().map(|input| input.node));
+        }
+        let target_node = self.nodes.iter_mut()
+            .find(|node| node.id == target)
+            .expect("validated target must exist");
+        target_node.inputs[slot] = source;
+        Ok(())
+    }
+
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
         let inputs = match kind.input_count() {
@@ -444,6 +494,21 @@ mod tests {
         let mut p = Project::default();
         p.graph.nodes[1].inputs = vec![PortRef::height(3)];
         assert!(p.graph.evaluate(64).unwrap_err().contains("cycle"));
+    }
+
+    #[test]
+    fn graph_connect_enforces_types_and_cycle_safety() {
+        let mut p = Project::default();
+        assert!(p.graph.connect(2, 0, PortRef::height(1)).is_ok());
+        assert!(p.graph.connect(2, 0, PortRef::new(3, "height"))
+            .unwrap_err().contains("cycle"));
+        assert!(p.graph.connect(2, 0, PortRef::new(2, "height"))
+            .unwrap_err().contains("itself"));
+        let slope = p.graph.add(NodeKind::Slope);
+        p.graph.connect(slope, 0, PortRef::height(1)).unwrap();
+        assert!(p.graph.connect(2, 0, PortRef::new(slope, "slope"))
+            .unwrap_err().contains("Cannot connect"));
+        assert_eq!(p.graph.get(2).unwrap().inputs[0], PortRef::height(1));
     }
 
     #[test]
