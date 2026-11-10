@@ -150,7 +150,8 @@ impl BlendCompute for GpuBlend {
             .map_err(|err| format!("GPU readback timeout: {err}"))?
             .map_err(|err| format!("GPU buffer mapping failed: {err}"))?;
         let data = {
-            let view = mapped.get_mapped_range();
+            let view = mapped.get_mapped_range()
+                .map_err(|err| format!("GPU readback range: {err}"))?;
             bytemuck::cast_slice::<u8, f32>(&view).to_vec()
         };
         stage.unmap();
