@@ -19,6 +19,8 @@ jobs:
         run: cargo check --all-targets
       - name: Unit tests (determinism, graph validation, conservation)
         run: cargo test --lib
+      - name: GPU numerical comparison (skip if runner lacks adapter)
+        run: cargo test --lib gpu_matches_cpu_at_multiple_resolutions -- --ignored --nocapture
       - name: Build Windows preview executable
         if: runner.os == 'Windows'
         run: cargo build --release
