@@ -3,7 +3,7 @@
 use gaia::pipeline::{PortRef, PortType};
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
-use std::{env, path::{Path, PathBuf}, process, time::Instant};
+use std::{env, path::PathBuf, process, time::Instant};
 
 const HELP: &str = r#"Gaia headless terrain builder
 Usage: gaia-build --project FILE --output STEM [--resolution N] [--port NODE:PORT] [--no-obj]
@@ -116,7 +116,7 @@ fn build(options: Options) -> Result<(), String> {
         "resolution": project.resolution,
         "graph_node_count": project.graph.nodes.len(),
         "node": output.node,
-        "port": output.port,
+        "port": output.port.clone(),
         "type": field.kind.label(),
         "min_raw": min,
         "max_raw": max,
@@ -179,9 +179,8 @@ mod tests {
 
     #[test]
     fn builds_without_gpu_or_window() {
-        let path = std::env::temp_dir().join(format!(
-            "gaia-cli-test-{}-{}", process::id(), std::thread::current().name().unwrap_or("test")
-        ));
+        let path = std::env::temp_dir().join(format!("gaia-cli-test-{}", process::id()));
+        let _ = std::fs::remove_dir_all(&path);
         let stem = path.join("terrain");
         build(Options {
             project: None,
