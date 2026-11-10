@@ -15,6 +15,7 @@ struct GaiaApp {
     texture: Option<egui::TextureHandle>,
     preview_source: PortRef,
     selected: u64,
+    wire_start: Option<PortRef>,
     filename: String,
     status: String,
     yaw: f32,
@@ -49,6 +50,7 @@ impl GaiaApp {
         ));
         Self {
             selected: project.graph.output,
+            wire_start: None,
             project,
             field,
             worker,
@@ -328,6 +330,7 @@ impl GaiaApp {
             })).collect();
         let mut changed = false;
         let mut set_output = false;
+        let mut requested_connection: Option<(u64, usize, PortRef)> = None;
         if let Some(node) = self.project.graph.nodes.iter_mut().find(|n| n.id == self.selected) {
             ui.label(egui::RichText::new(node.kind.label()).size(18.0)
                 .strong().color(ui_theme::ACCENT));
@@ -354,7 +357,9 @@ impl GaiaApp {
                         .show_ui(ui, |ui| {
                             for (reference, kind, name) in &options {
                                 if reference.node != node.id && Some(*kind) == required {
-                                    changed |= ui.selectable_value(input, reference.clone(), name).changed();
+                                    if ui.selectable_label(reference == input, name).clicked() {
+                                        requested_connection = Some((node.id, index, reference.clone()));
+                                    }
                                 }
                             }
                         });
@@ -444,6 +449,12 @@ impl GaiaApp {
         } else {
             ui.label("Click a node in the graph to edit it.");
         }
+        if let Some((target, slot, source)) = requested_connection {
+            match self.project.graph.connect(target, slot, source) {
+                Ok(()) => changed = true,
+                Err(error) => self.status = format!("Connection rejected: {error}"),
+            }
+        }
         if set_output {
             self.project.graph.output = self.selected;
             self.preview_source = PortRef::height(self.selected);
@@ -454,7 +465,7 @@ impl GaiaApp {
             self.unsaved = true;
         }
         ui.separator();
-        ui.label(egui::RichText::new("Drag nodes to arrange your graph. Change connections with the input selectors.")
+        ui.label(egui::RichText::new("Drag from an output socket to a compatible input. Drag cards to rearrange.")
             .size(12.0).color(ui_theme::MUTED));
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Connections are validated before rebuilding.")
@@ -464,6 +475,7 @@ impl GaiaApp {
     fn graph_canvas(&mut self, ui: &mut egui::Ui) {
         const WIDTH: f32 = 194.0;
         const HEIGHT: f32 = 74.0;
+        const STEP: f32 = 17.0;
         let extent = egui::vec2(ui.available_width().max(920.0), 360.0);
         let (rect, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
         let painter = ui.painter_at(rect);
@@ -488,8 +500,10 @@ impl GaiaApp {
         for node in &nodes {
             for (i, source) in node.inputs.iter().enumerate() {
                 if let Some(parent) = nodes.iter().find(|n| n.id == source.node) {
+                    let port_index = parent.kind.output_ports().iter()
+                        .position(|(name, _)| *name == source.port).unwrap_or(0);
                     let start = rect.left_top() + egui::vec2(
-                        parent.position[0] + WIDTH, parent.position[1] + 28.0
+                        parent.position[0] + WIDTH, parent.position[1] + 29.0 + port_index as f32 * STEP
                     );
                     let end = rect.left_top() + egui::vec2(
                         node.position[0], node.position[1] + 29.0 + i as f32 * 17.0
@@ -515,9 +529,13 @@ impl GaiaApp {
                 }
             }
         }
+        let mut requested_wire = None;
+        let released = ui.input(|i| i.pointer.any_released());
         for node in &mut self.project.graph.nodes {
             let top_left = rect.left_top() + egui::vec2(node.position[0], node.position[1]);
-            let node_rect = egui::Rect::from_min_size(top_left, egui::vec2(WIDTH, HEIGHT));
+            let port_count = node.inputs.len().max(node.kind.output_ports().len()).max(1);
+            let node_height = HEIGHT.max(47.0 + port_count as f32 * STEP);
+            let node_rect = egui::Rect::from_min_size(top_left, egui::vec2(WIDTH, node_height));
             let response = ui.interact(
                 node_rect, ui.scope_id().with(("node", node.id)),
                 egui::Sense::click_and_drag()
@@ -741,7 +759,7 @@ impl eframe::App for GaiaApp {
                             self.project.graph.nodes.len(), self.project.graph.output)
                     ).monospace().size(10.0).color(ui_theme::MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Select · drag · edit inputs in Properties")
+                        ui.label(egui::RichText::new("Select · drag · connect ports")
                             .size(11.0).color(ui_theme::MUTED));
                     });
                 });
