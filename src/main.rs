@@ -48,7 +48,7 @@ impl GaiaApp {
             field,
             cache,
             texture,
-            preview_source: PortRef::height(project.graph.output),
+            preview_source,
             filename: "terrain.gaia.json".to_string(),
             status: "Ready. Drag on the 3D preview to orbit; scroll to zoom.".to_string(),
             yaw,
