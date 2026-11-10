@@ -577,19 +577,81 @@ impl GaiaApp {
             painter.text(node_rect.left_top() + egui::vec2(14.0, 41.0),
                 egui::Align2::LEFT_TOP, format!("NODE #{:03}", node.id),
                 egui::FontId::monospace(10.0), ui_theme::MUTED);
-            for i in 0..node.inputs.len() {
-                painter.circle_filled(
-                    node_rect.left_top() + egui::vec2(0.0, 29.0 + i as f32 * 17.0),
-                    4.0, ui_theme::BLUE
-                );
+            for slot in 0..node.inputs.len() {
+                let center = node_rect.left_top() + egui::vec2(0.0, 29.0 + slot as f32 * STEP);
+                let socket = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
+                let response = ui.interact(
+                    socket, ui.scope_id().with(("input-socket", node.id, slot)),
+                    egui::Sense::hover()
+                ).on_hover_text(format!(
+                    "Input {} · {}",
+                    slot + 1,
+                    node.kind.input_type(slot).map(|ty| ty.label()).unwrap_or("?")
+                ));
+                let compatible = self.wire_start.as_ref().is_some_and(|source| {
+                    nodes.iter().find(|n| n.id == source.node)
+                        .and_then(|n| n.kind.output_ports().iter()
+                            .find(|(port, _)| *port == source.port))
+                        .is_some_and(|(_, ty)| Some(*ty) == node.kind.input_type(slot))
+                });
+                if released && response.hovered() {
+                    if let Some(source) = &self.wire_start {
+                        requested_wire = Some((node.id, slot, source.clone()));
+                    }
+                }
+                painter.circle_filled(center,
+                    if compatible { 6.0 } else { 4.0 },
+                    if compatible { ui_theme::ACCENT } else { ui_theme::BLUE });
             }
-            painter.circle_filled(
-                node_rect.left_top() + egui::vec2(WIDTH, 28.0), 4.0, color
-            );
+            for (slot, (port, kind)) in node.kind.output_ports().iter().enumerate() {
+                let center = node_rect.left_top()
+                    + egui::vec2(WIDTH, 29.0 + slot as f32 * STEP);
+                let socket = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
+                let response = ui.interact(
+                    socket, ui.scope_id().with(("output-socket", node.id, slot)),
+                    egui::Sense::click_and_drag()
+                ).on_hover_text(format!("{} · {} · drag to connect", port, kind.label()));
+                if response.drag_started() {
+                    self.wire_start = Some(PortRef::new(node.id, *port));
+                }
+                painter.circle_filled(center,
+                    if response.hovered() { 6.0 } else { 4.5 },
+                    if response.hovered() { ui_theme::TEXT } else { color });
+            }
             if node.id == self.project.graph.output {
                 painter.text(node_rect.right_bottom() + egui::vec2(-10.0, -12.0),
                     egui::Align2::RIGHT_BOTTOM, "OUTPUT",
                     egui::FontId::monospace(10.0), ui_theme::ACCENT);
+            }
+        }
+        if let Some(source) = &self.wire_start {
+            if let Some(parent) = nodes.iter().find(|n| n.id == source.node) {
+                if let Some(index) = parent.kind.output_ports().iter()
+                    .position(|(name, _)| *name == source.port)
+                {
+                    let from = rect.left_top() + egui::vec2(
+                        parent.position[0] + WIDTH,
+                        parent.position[1] + 29.0 + index as f32 * STEP
+                    );
+                    if let Some(to) = ui.input(|i| i.pointer.hover_pos()) {
+                        painter.line_segment(
+                            [from, to], egui::Stroke::new(2.5, ui_theme::ACCENT)
+                        );
+                    }
+                }
+            }
+        }
+        if released {
+            self.wire_start = None;
+            if let Some((target, slot, source)) = requested_wire {
+                match self.project.graph.connect(target, slot, source) {
+                    Ok(()) => {
+                        self.graph_dirty = true;
+                        self.unsaved = true;
+                        self.status = "Graph connection updated".to_owned();
+                    }
+                    Err(error) => self.status = format!("Connection rejected: {error}"),
+                }
             }
         }
     }
