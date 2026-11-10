@@ -80,7 +80,7 @@ impl PortRef {
 
 /// Field-based output. This first milestone supports Height/Mask values.
 /// Remaining port types are reserved and cannot be wired until implemented.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FieldValue {
     pub kind: PortType,
     pub data: Arc<HeightField>,
