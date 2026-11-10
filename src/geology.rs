@@ -110,6 +110,7 @@ pub fn warp(input: &HeightField, seed: u32, frequency: f32, amount: f32) -> Heig
     let size = input.size;
     let mut output = HeightField::flat(size, 0.0);
     let amount = amount.clamp(0.0, 0.25);
+    if amount == 0.0 { return input.clone(); }
     let frequency = frequency.clamp(0.5, 40.0);
     for y in 0..size {
         for x in 0..size {
