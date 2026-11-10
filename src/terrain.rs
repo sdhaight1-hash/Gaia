@@ -43,6 +43,7 @@ impl NodeKind {
             Self::Mountain { .. } => "Mountain",
             Self::Noise { .. } => "Noise",
             Self::Erosion { .. } => "Thermal erosion",
+            Self::Hydraulic { .. } => "Hydraulic erosion",
             Self::Terrace { .. } => "Terrace",
             Self::Blur { .. } => "Blur",
             Self::Blend { .. } => "Blend",
