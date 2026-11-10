@@ -1,78 +1,61 @@
-# Gaea 2.3.1 functional-parity contract (Gaia)
+# Gaia ↔ Gaea 2.3 functional parity ledger
 
-Target: QuadSpinner Gaea 2.3.1.0, production release of 2026-09-24.
-Gaea 3 is a later target, not included in the Gaea 2 completion gate.
+**Updated: 2026-11-10.** Target is the documented workflow of QuadSpinner
+Gaea 2.3, implemented independently in Rust and wgpu. Gaea's proprietary
+code/assets/algorithms are not part of Gaia.
 
-Parity means independently reimplementing functions and workflows, not using
-proprietary code, bundled assets, or pixel-identical proprietary visuals.
-Gaea's unpublished numerical algorithms cannot be exactly reproduced.
+References: https://quadspinner.com/Gaea |
+https://docs.gaea.app/reference/nodes/ |
+https://docs.gaea.app/reference/nodes/simulate/erosion
 
-References:
-- https://www.quadspinner.com/Download
-- https://quadspinner.com/Gaea/Features
-- https://docs.gaea.app/reference/nodes/
-- https://docs.gaea.app/reference/nodes/simulate/erosion
-- https://blog.quadspinner.com/gaea-2-3-now-available/
+## Verified implementation versus outstanding work
 
-## Capability matrix (2026-11-10)
+| Capability | Implemented on latest development branch | Still missing for Gaea-class workflow |
+|---|---|---|
+| Graph | Typed Height/Mask/Water output ports, multi-output nodes, input type validation, legacy JSON migration, cached DAG, async cancellable builds | On-canvas socket wiring, node deletion, macros, expressions, variables, user subgraphs, undo/redo |
+| Terrain generators | Mountain, Noise, Range, Crater, Dunes, Canyon | Islands, volcanoes, uplift/tectonics, rock layers, geological diversity, art-directed generator fidelity |
+| Terrain modifiers | Terrace, Blur, Warp, Blend, Masked Blend | Fracture, strata, displacement operators, custom remaps, more blending modes |
+| Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
+| Hydrology | Water depth, suspended sediment, cumulative flow map | Rivers/lakes/sea geometry, watershed hierarchy, coastlines, stable high-resolution water systems |
+| Masks | Slope, Curvature, Elevation, Wear, Deposits, Flow | Aspect, terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
+| Color/materials | No true Color fields | Colorized surfaces, gradients, texture/multi-channel materials, splat/normal maps |
+| Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
+| Viewport/editor | Themed docked workspace, 2D maps, orbiting wgpu 3D mesh preview, property inspector, export menu | Depth-tested viewport, per-node thumbnails, direct socket wiring, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
+| Output/build | Transparent JSON projects, normalized 16-bit PNG and OBJ, export selected scalar map | Large tiled/region builds, adaptive meshes, heightfield import, texture/material exports, CLI/job queue, DCC/engine integrations |
+| Performance | Cancellable background builds, incremental cache, wgpu preview, first WGSL Blend compute kernel (>=256 samples) | CPU/GPU performance profiling, broader compute kernels, GPU batched graph execution, tiling, memory budgets, GPU numerical sign-off |
 
-| Area | Gaea 2.3 scope | Gaia current state | Required parity |
-|---|---|---|---|
-| Graph | Typed ports, multi-output nodes, macros, variables, conditional routing, cache, modifiers | Heightfield-only DAG; node settings | Typed multi-output evaluation, dirty propagation, undo/redo, macros, expressions |
-| Generators | Mountains, ranges, islands, canyons, dunes, volcanoes, geological primitives | Mountain and noise | Representative family with shape controls and presets |
-| Surfaces/modify | Warp, transpose, rock layers, strata, fractures, filters | Blur and terrace | Production-grade geological modifiers |
-| Erosion/debris | Hydraulic and thermal erosion, rock, scree, sediment, debris | Thermal talus approximation | Separate water/bedrock/sediment; art-directable validated algorithms |
-| Water/snow/ice | Lakes, rivers, sea, snowfield and glaciers | None | Geometrically coherent simulations and data outputs |
-| Derived data | Height, slope, curvature, wear, deposit, flow, depth, normals | None | Connected, typed and reusable mask outputs |
-| Color | Surface-aware color, mixers, material/weathering, erosion colors | None | Layered graph-driven color and texture channels |
-| Vegetation | Trees, shrubs, climate and topography controls | None | Terrain-aware scatter fields, masks, point export |
-| Editor | Rich node graph, 2D/3D maps, draw/gizmos, recovery, analysis | Themed preview/editor prototype | Direct socket wiring, pan/zoom, undo/redo, live previews, persistence |
-| Build/export | High-resolution tiled/region builds, caches/baking, adaptive mesh, CLI, point clouds | 512 max; PNG16, OBJ | Efficient chunk builds, seam tests, multiple formats, batch automation |
-| Compute | Hybrid CPU/GPU and SIMD algorithms | CPU processing; wgpu rendering only | GPU compute where beneficial; CPU reference and numerical validation |
+## Acceptance levels
 
-## Non-negotiable engine architecture
+- **A — Compiled:** Rust code type-checks for both supported CI platforms.
+- **B — Numerically validated:** Determinism, graph safety and mass ledgers
+  pass automated regression tests.
+- **C — GPU verified:** Actual device execution, WGSL validation, CPU/GPU
+  tolerances and performance measured at 64/128/256/512 samples.
+- **D — Interactive verified:** Windows 1080p application screenshot/video
+  and mouse/keyboard controls checked on target hardware.
+- **E — Workflow-complete:** Production work can be built/exported end to end
+  without manual fixes, at relevant scale, with stability benchmarks.
 
-1. Typed multi-output graph. Port types include Height, Mask, Color,
-   Vector, Water, Points, Mesh. A node may publish multiple named outputs.
-   Erosion publishes at least Height, Wear, Deposits and Flow.
-2. Pure evaluation core. Node parameters and result caches stay separate.
-   Cache identity captures inputs, parameters, algorithm revision,
-   region/resolution and seed.
-3. Incremental evaluation. Editing one node invalidates only that node
-   and downstream dependencies; preview and final build share cache.
-4. Compute uses Rust + wgpu. Keep a reference CPU path for validation
-   and fallback, then add GPU kernels. Floating-point output is compared
-   with explicit tolerances across GPUs.
-5. Simulation state is explicit. Bedrock, sediment, water, snow/ice and
-   point populations are distinct fields with conservation diagnostics.
-6. Tile boundaries are validated; algorithms declare halo requirements.
-7. The desktop UI is a client of the same engine used by headless builds.
+CI A/B passing does not imply C/D/E. On GitHub's Ubuntu runner the optional
+GPU numerical comparison can *skip* because no graphics adapter exists.
+Real GPU numerical results remain required.
 
-## Immediate implementation sequence
+## Immediate implementation priorities
 
-A. Port and output contract (first PR): PortType, PortRef, typed outputs,
-   JSON migration from legacy graph, graph validation. Add real
-   Height/Slope/Wear/Deposits output nodes and a consuming masked Blend.
+1. Finish depth-tested wgpu 3D render target, drag-to-connect node ports,
+   undo/redo and native file handling — before expanding the UI further.
+2. Add terrain import and output units/scales, batch builds, diagnostic
+   overlays and a reproducible benchmark suite.
+3. Expand hydrology (flow accumulation, drains, channel extraction, lakes),
+   test water/solid ledgers over long runs and validate tile seams.
+4. Add multi-channel Color/Materials as actual typed buffers, then
+   environment-aware surface and ecosystem models.
+5. Tiled evaluation and GPU batched kernels with CPU reference checks,
+   caches, cancellation, persistent build artifacts and headless CLI.
 
-B. Caching/evaluation: per-node cache, dependency invalidation, preview
-   of any output, asynchronous cancellable builds.
+## Release gate
 
-C. GPU compute: wgpu pointwise blend/masks first; ping-pong iterative
-   simulation second. Establish CPU-vs-GPU tests and timing on RTX 2060.
-
-D. Physically grounded hydraulics: conservative rain/flow, sediment
-   erosion and deposition, wear/deposits/flow outputs, outlet accounting.
-   Follow with detailed geology, hydrology, surface masks and color.
-
-## First milestone acceptance tests
-
-- Legacy projects load and six existing tests still pass.
-- Height/Wear/Deposits are separate independently selectable outputs.
-- Typed Mask-to-Blend connection works; invalid links and cycles are errors.
-- Editing one branch does not evaluate unrelated branches.
-- GPU compute executes and matches CPU reference within stated tolerance.
-- Long runs are cancellable without blocking the UI.
-- Windows wgpu viewport and graph UX are visually verified at 1080p.
-
-Do not describe Gaia as Gaea-equivalent until the capability matrix is
-substantially complete and validated, including production exports.
+Do not call Gaia a completed Gaea clone until major documented node families,
+multi-output workflows, large builds, material/output pipelines and verified
+interactive experiences are delivered. Exact numerical identity is neither
+possible nor intended without access to QuadSpinner's proprietary implementation.
