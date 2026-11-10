@@ -62,6 +62,22 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   with CPU fallback when no GPU device was supplied. GPU numerical
   verification on a target machine is still required.
 
+## Headless builds
+
+Gaia also includes a windowless CPU builder, useful for automation and
+reproducible terrain exports without a working GPU or graphics session:
+
+```sh
+cargo run --release --bin gaia-build -- --demo --output builds/sample --resolution 256
+cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/final
+cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/erosion-wear --port 2:wear --no-obj
+```
+
+Every build writes normalized 16-bit PNG plus a JSON report of dimensions,
+raw min/max/mean, selected graph port and export metadata. Height outputs
+also write OBJ unless `--no-obj` is set. The current supported resolutions
+are 32–512, and the build is single-grid (not tiled).
+
 ## Verification
 
 ```sh
