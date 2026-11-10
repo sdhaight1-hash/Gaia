@@ -2,13 +2,13 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::terrain::{
-    blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields, Graph, HeightField,
+    blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,10 +133,23 @@ impl GraphCache {
     }
 
     pub fn evaluate(
-        &mut self,
-        graph: &Graph,
-        resolution: usize,
-        source: &PortRef,
+        &mut self, graph: &Graph, resolution: usize, source: &PortRef,
+    ) -> Result<FieldValue, String> {
+        self.evaluate_inner(graph, resolution, source, None)
+    }
+
+    /// Returns an error when a newer generation supersedes the current build.
+    /// The signal is checked at graph nodes and throughout thermal iterations.
+    pub fn evaluate_cancellable(
+        &mut self, graph: &Graph, resolution: usize, source: &PortRef,
+        generation: &AtomicU64, expected: u64,
+    ) -> Result<FieldValue, String> {
+        self.evaluate_inner(graph, resolution, source, Some((generation, expected)))
+    }
+
+    fn evaluate_inner(
+        &mut self, graph: &Graph, resolution: usize, source: &PortRef,
+        cancelled: Option<(&AtomicU64, u64)>,
     ) -> Result<FieldValue, String> {
         if !(32..=512).contains(&resolution) {
             return Err("Resolution must be between 32 and 512".to_owned());
@@ -146,7 +159,7 @@ impl GraphCache {
         }
         self.stats = EvaluationStats::default();
         let mut visiting = HashSet::new();
-        let (_, bundle) = self.visit(graph, resolution, source.node, &mut visiting)?;
+        let (_, bundle) = self.visit(graph, resolution, source.node, &mut visiting, cancelled)?;
         Ok(bundle.field(&source.port)?.clone())
     }
 
@@ -156,7 +169,9 @@ impl GraphCache {
         size: usize,
         id: u64,
         visiting: &mut HashSet<u64>,
+        cancelled: Option<(&AtomicU64, u64)>,
     ) -> Result<(u64, Arc<NodeOutputs>), String> {
+        if build_cancelled(cancelled) { return Err("Build cancelled".to_owned()); }
         if !visiting.insert(id) {
             return Err(format!("Graph cycle detected at node #{id}"));
         }
@@ -171,7 +186,7 @@ impl GraphCache {
             let mut inputs = Vec::with_capacity(node.inputs.len());
             let mut source_keys = Vec::with_capacity(node.inputs.len());
             for (slot, source) in node.inputs.iter().enumerate() {
-                let (key, bundle) = self.visit(graph, size, source.node, visiting)?;
+                let (key, bundle) = self.visit(graph, size, source.node, visiting, cancelled)?;
                 let field = bundle.field(&source.port).map_err(|_| {
                     format!("Node #{} has no port '{}'", source.node, source.port)
                 })?;
@@ -206,7 +221,7 @@ impl GraphCache {
                 }
             }
 
-            let output = evaluate_kind(&node.kind, size, &inputs)?;
+            let output = evaluate_kind(&node.kind, size, &inputs, || build_cancelled(cancelled))?;
             for (name, field) in &output.fields {
                 if field.data.size != size || field.data.values.iter().any(|v| !v.is_finite()) {
                     return Err(format!("Node #{id} produced invalid '{name}' data"));
@@ -220,6 +235,10 @@ impl GraphCache {
         visiting.remove(&id);
         result
     }
+}
+
+fn build_cancelled(signal: Option<(&AtomicU64, u64)>) -> bool {
+    signal.is_some_and(|(current, expected)| current.load(Ordering::Relaxed) != expected)
 }
 
 impl NodeKind {
@@ -251,7 +270,9 @@ impl NodeKind {
     }
 }
 
-fn evaluate_kind(kind: &NodeKind, size: usize, inputs: &[FieldValue]) -> Result<NodeOutputs, String> {
+fn evaluate_kind(
+    kind: &NodeKind, size: usize, inputs: &[FieldValue], cancelled: impl Fn() -> bool,
+) -> Result<NodeOutputs, String> {
     let take = |n: usize| &*inputs[n].data;
     let result = match kind {
         NodeKind::Mountain { seed, frequency, height } =>
@@ -261,7 +282,9 @@ fn evaluate_kind(kind: &NodeKind, size: usize, inputs: &[FieldValue]) -> Result<
             NodeOutputs::default().with("height", PortType::Height,
                 generate_noise(size, *seed, *frequency, *amplitude)),
         NodeKind::Erosion { iterations, talus, strength } => {
-            let data = thermal_erosion_fields(take(0), (*iterations).min(200), *talus, *strength);
+            let data = thermal_erosion_fields_checked(
+                take(0), (*iterations).min(200), *talus, *strength, &cancelled
+            ).ok_or_else(|| "Build cancelled".to_owned())?;
             NodeOutputs::default()
                 .with("height", PortType::Height, data.height)
                 .with("wear", PortType::Mask, data.wear)
@@ -401,6 +424,18 @@ mod tests {
         cache.evaluate(&p.graph, 64, &PortRef::height(3)).unwrap();
         assert_eq!(cache.stats.computed, 1);
         assert_eq!(cache.stats.reused, 2);
+    }
+
+    #[test]
+    fn cancelled_generation_does_not_finish() {
+        let p = Project::default();
+        let signal = AtomicU64::new(3);
+        let mut cache = GraphCache::default();
+        let error = cache.evaluate_cancellable(
+            &p.graph, 64, &PortRef::height(p.graph.output), &signal, 2
+        ).unwrap_err();
+        assert!(error.contains("cancelled"));
+        assert_eq!(cache.stats.computed, 0);
     }
 
     #[test]
