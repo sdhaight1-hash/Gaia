@@ -197,7 +197,7 @@ fn noise(x: f32, y: f32, seed: u32) -> f32 {
     (a + (b - a) * sx) * (1.0 - sy) + (c + (d - c) * sx) * sy
 }
 
-fn fractal(x: f32, y: f32, seed: u32, frequency: f32) -> f32 {
+pub(crate) fn fractal(x: f32, y: f32, seed: u32, frequency: f32) -> f32 {
     let mut sum = 0.0;
     let mut norm = 0.0;
     let mut weight = 1.0;
