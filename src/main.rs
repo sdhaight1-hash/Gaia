@@ -1,7 +1,7 @@
 mod gpu;
 
 use eframe::egui;
-use gaia::terrain::{export_obj, export_png16, Graph, HeightField, NodeKind, Project};
+use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
 use std::path::Path;
 
 struct GaiaApp {
@@ -252,7 +252,7 @@ impl GaiaApp {
         for node in &mut self.project.graph.nodes {
             let top_left = rect.left_top() + egui::vec2(node.position[0], node.position[1]);
             let node_rect = egui::Rect::from_min_size(top_left, egui::vec2(182.0, 58.0));
-            let response = ui.interact(node_rect, ui.id().with(("node", node.id)), egui::Sense::click_and_drag());
+            let response = ui.interact(node_rect, ui.scope_id().with(("node", node.id)), egui::Sense::click_and_drag());
             if response.clicked() {
                 self.selected = node.id;
             }
@@ -332,30 +332,31 @@ impl GaiaApp {
 }
 
 impl eframe::App for GaiaApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("gaia_toolbar").show(ctx, |ui| self.toolbar(ui));
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        egui::Panel::top("gaia_toolbar").show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.small(&self.status);
                 ui.separator();
                 ui.small("Gaia 0.1 | Rust + wgpu");
             });
         });
-        egui::SidePanel::left("inspector").default_width(275.0).resizable(true).show(ctx, |ui| {
+        egui::Panel::left("inspector").default_size(275.0).resizable(true).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
         });
-        egui::TopBottomPanel::bottom("graph")
-            .resizable(true).default_height(270.0).min_height(120.0)
-            .show(ctx, |ui| {
+        egui::Panel::bottom("graph")
+            .resizable(true).default_size(270.0).min_size(120.0)
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.strong("NODE GRAPH");
                     ui.label("Click to select • drag to move");
                 });
                 egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| self.graph_canvas(ui));
             });
-        egui::CentralPanel::default().show(ctx, |ui| self.viewport(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.viewport(ui));
         if self.graph_dirty {
-            self.rebuild(ctx);
+            self.rebuild(&ctx);
         }
         if self.gpu_dirty {
             if let Some(render_state) = frame.wgpu_render_state() {
