@@ -11,6 +11,7 @@ struct GaiaApp {
     field: HeightField,
     cache: GraphCache,
     texture: Option<egui::TextureHandle>,
+    preview_source: PortRef,
     selected: u64,
     filename: String,
     status: String,
@@ -46,6 +47,7 @@ impl GaiaApp {
             field,
             cache,
             texture,
+            preview_source: PortRef::height(project.graph.output),
             filename: "terrain.gaia.json".to_string(),
             status: "Ready. Drag on the 3D preview to orbit; scroll to zoom.".to_string(),
             yaw,
@@ -63,26 +65,56 @@ impl GaiaApp {
             &PortRef::height(self.project.graph.output), &mut self.cache) {
             Ok(field) => {
                 self.field = (*field.data).clone();
-                let image = height_image(&self.field);
-                if let Some(texture) = self.texture.as_mut() {
-                    texture.set(image, egui::TextureOptions::LINEAR);
-                } else {
-                    self.texture = Some(ctx.load_texture(
-                        "Gaia heightfield", image, egui::TextureOptions::LINEAR,
-                    ));
-                }
+                let computed = self.cache.stats.computed;
+                let reused = self.cache.stats.reused;
                 self.gpu_dirty = true;
                 self.status = format!(
                     "Built {} × {} terrain from node #{} · {} computed / {} reused",
                     self.field.size, self.field.size, self.project.graph.output,
-                    self.cache.stats.computed, self.cache.stats.reused,
+                    computed, reused,
                 );
+                self.refresh_preview(ctx);
             }
             Err(err) => {
                 self.status = format!("Graph error: {err}. Showing last valid preview.");
             }
         }
         self.graph_dirty = false;
+    }
+
+    fn refresh_preview(&mut self, ctx: &egui::Context) {
+        match self.project.graph.evaluate_cached(self.project.resolution,
+            &self.preview_source, &mut self.cache)
+        {
+            Ok(value) => {
+                let image = height_image(&value.data);
+                if let Some(texture) = self.texture.as_mut() {
+                    texture.set(image, egui::TextureOptions::LINEAR);
+                } else {
+                    self.texture = Some(ctx.load_texture(
+                        "Gaia selected graph output", image, egui::TextureOptions::LINEAR));
+                }
+            }
+            Err(error) => self.status = format!(
+                "Preview #{}:{}: {error}", self.preview_source.node, self.preview_source.port
+            ),
+        }
+    }
+
+    fn export_selected_map(&mut self) {
+        let output = self.project.graph.evaluate_cached(self.project.resolution,
+            &self.preview_source, &mut self.cache);
+        match output {
+            Ok(value) => {
+                let path = Path::new(&self.filename)
+                    .with_extension(format!("{}.png", self.preview_source.port));
+                self.status = match export_png16(&value.data, &path) {
+                    Ok(()) => format!("Exported selected map to {}", path.display()),
+                    Err(error) => format!("Map export failed: {error}"),
+                };
+            }
+            Err(error) => self.status = format!("Map export failed: {error}"),
+        }
     }
 
     fn save_project(&mut self) {
@@ -99,6 +131,7 @@ impl GaiaApp {
         match Project::load(Path::new(&self.filename)) {
             Ok(project) => {
                 self.selected = project.graph.output;
+                self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
                 self.cache.clear();
                 self.graph_dirty = true;
@@ -126,7 +159,16 @@ impl GaiaApp {
     }
 
     fn add_node(&mut self, kind: NodeKind) {
+        let is_mask = matches!(kind, NodeKind::Slope);
         self.selected = self.project.graph.add(kind);
+        if let Some(node) = self.project.graph.get(self.selected) {
+            if let Some((name, _)) = node.kind.output_ports().first() {
+                self.preview_source = PortRef::new(self.selected, *name);
+            }
+        }
+        if is_mask {
+            self.view_2d = true;
+        }
         self.graph_dirty = true;
         self.unsaved = true;
     }
@@ -206,6 +248,10 @@ impl GaiaApp {
                 }
                 if ui.button("3D Terrain Mesh  ·  OBJ").clicked() {
                     self.export_mesh();
+                    ui.close();
+                }
+                if ui.button("Selected graph output  ·  PNG16").clicked() {
+                    self.export_selected_map();
                     ui.close();
                 }
             });
@@ -322,6 +368,7 @@ impl GaiaApp {
         }
         if set_output {
             self.project.graph.output = self.selected;
+            self.preview_source = PortRef::height(self.selected);
             changed = true;
         }
         if changed {
@@ -457,7 +504,28 @@ impl GaiaApp {
                 .strong().color(ui_theme::TEXT));
             ui.separator();
             ui.selectable_value(&mut self.view_2d, false, "3D");
-            ui.selectable_value(&mut self.view_2d, true, "Heightmap");
+            ui.selectable_value(&mut self.view_2d, true, "2D map");
+            let before = self.preview_source.clone();
+            egui::ComboBox::from_id_salt("preview_port")
+                .selected_text(format!(
+                    "#{}:{}",
+                    self.preview_source.node, self.preview_source.port
+                ))
+                .show_ui(ui, |ui| {
+                    for node in &self.project.graph.nodes {
+                        for (port, kind) in node.kind.output_ports() {
+                            let source = PortRef::new(node.id, *port);
+                            let label = format!("#{} {} · {} ({})",
+                                node.id, node.kind.label(), port, kind.label());
+                            ui.selectable_value(&mut self.preview_source, source, label);
+                        }
+                    }
+                });
+            if before != self.preview_source {
+                self.view_2d = true;
+                let ctx = ui.ctx().clone();
+                self.refresh_preview(&ctx);
+            }
             ui.label(egui::RichText::new(format!(
                 "{}²", self.field.size
             )).monospace().size(11.0).color(ui_theme::MUTED));
@@ -514,12 +582,12 @@ impl GaiaApp {
         ), egui::StrokeKind::Inside);
         ui.painter().text(rect.left_top() + egui::vec2(16.0, 15.0),
             egui::Align2::LEFT_TOP,
-            if self.view_2d { "HEIGHT DATA  •  TOP DOWN" }
+            if self.view_2d { "SELECTED GRAPH MAP  •  TOP DOWN" }
             else { "PERSPECTIVE  •  REALTIME GPU" },
             egui::FontId::monospace(11.0), ui_theme::TEXT);
         ui.painter().text(rect.left_bottom() + egui::vec2(16.0, -17.0),
             egui::Align2::LEFT_BOTTOM,
-            if self.view_2d { "16-bit heightmap available in Export" }
+            if self.view_2d { "Selected map available as 16-bit PNG in Export" }
             else { "Drag to orbit   •   Scroll to zoom" },
             egui::FontId::proportional(12.0), ui_theme::TEXT);
     }
