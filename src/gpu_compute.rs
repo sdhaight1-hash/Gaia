@@ -162,6 +162,50 @@ impl BlendCompute for GpuBlend {
 mod tests {
     use super::*;
 
+    /// Explicit hardware test; execute manually on the target GPU using
+    /// cargo test gpu_matches_cpu -- --ignored --nocapture.
+    #[test]
+    #[ignore = "requires native GPU or software Vulkan adapter"]
+    fn gpu_matches_cpu_at_multiple_resolutions() {
+        use crate::pipeline::blend as cpu_blend;
+        let instance = wgpu::Instance::default();
+        let adapter = match pollster::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+        ) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                eprintln!("SKIP GPU comparison: no adapter: {error}");
+                return;
+            }
+        };
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor::default())
+        ).expect("device creation failed");
+        let gpu = GpuBlend::new(device, queue);
+        for size in [64, 128, 256, 512] {
+            let mut a = HeightField::flat(size, 0.0);
+            let mut b = a.clone();
+            let mut mask = a.clone();
+            for (i, ((av, bv), mv)) in a.values.iter_mut()
+                .zip(&mut b.values).zip(&mut mask.values).enumerate()
+            {
+                *av = (i % 137) as f32 / 137.0;
+                *bv = (i % 97) as f32 / 97.0;
+                *mv = (i % 31) as f32 / 31.0;
+            }
+            let expected = cpu_blend(&a, &b, Some(&mask), 0.6);
+            let actual = gpu.blend(&a, &b, Some(&mask), 0.6)
+                .expect("wgpu blend failed");
+            let error = expected.values.iter().zip(&actual.values)
+                .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+            assert!(error <= 1e-5, "size {size}: GPU/CPU max error {error}");
+        }
+    }
+
     #[test]
     fn gpu_shader_declares_dispatch_and_guard() {
         let shader = include_str!("blend.wgsl");
