@@ -378,6 +378,8 @@ mod tests {
         assert!(p.graph.evaluate(64).unwrap_err().contains("no port"));
         p.graph.nodes[1].inputs = vec![PortRef::new(1, "height")];
         let id = p.graph.add(NodeKind::Slope);
+        p.graph.nodes.iter_mut().find(|node| node.id == id).unwrap().inputs =
+            vec![PortRef::height(1)];
         let mask = PortRef::new(id, "slope");
         p.graph.nodes[1].inputs = vec![mask];
         assert!(p.graph.evaluate_port(64, &PortRef::height(2))
