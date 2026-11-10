@@ -3,13 +3,14 @@ mod ui_theme;
 
 use eframe::egui;
 use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
-use gaia::pipeline::{GraphCache, PortRef, PortType};
+use gaia::pipeline::{PortRef, PortType};
+use gaia::worker::GraphWorker;
 use std::path::Path;
 
 struct GaiaApp {
     project: Project,
     field: HeightField,
-    cache: GraphCache,
+    worker: GraphWorker,
     texture: Option<egui::TextureHandle>,
     preview_source: PortRef,
     selected: u64,
@@ -28,10 +29,9 @@ impl GaiaApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_theme::apply(&cc.egui_ctx);
         let project = Project::default();
-        let mut cache = GraphCache::default();
-        let field = (*project.graph.evaluate_cached(project.resolution,
-            &PortRef::height(project.graph.output), &mut cache)
-            .expect("default terrain project must evaluate").data).clone();
+        let field = project.graph.evaluate(project.resolution)
+            .expect("default terrain project must evaluate");
+        let worker = GraphWorker::new();
         let preview_source = PortRef::height(project.graph.output);
         let yaw = 0.85;
         let pitch = 0.72;
@@ -46,7 +46,7 @@ impl GaiaApp {
             selected: project.graph.output,
             project,
             field,
-            cache,
+            worker,
             texture,
             preview_source,
             filename: "terrain.gaia.json".to_string(),
@@ -61,50 +61,58 @@ impl GaiaApp {
         }
     }
 
-    fn rebuild(&mut self, ctx: &egui::Context) {
-        match self.project.graph.evaluate_cached(self.project.resolution,
-            &PortRef::height(self.project.graph.output), &mut self.cache) {
-            Ok(field) => {
-                self.field = (*field.data).clone();
-                let computed = self.cache.stats.computed;
-                let reused = self.cache.stats.reused;
-                self.gpu_dirty = true;
+    fn rebuild(&mut self, _ctx: &egui::Context) {
+        match self.worker.submit(self.project.clone(), self.preview_source.clone()) {
+            Ok(_) => {
                 self.status = format!(
-                    "Built {} × {} terrain from node #{} · {} computed / {} reused",
-                    self.field.size, self.field.size, self.project.graph.output,
-                    computed, reused,
+                    "Building {}² terrain  ·  preview #{}:{}",
+                    self.project.resolution, self.preview_source.node, self.preview_source.port
                 );
-                self.refresh_preview(ctx);
             }
-            Err(err) => {
-                self.status = format!("Graph error: {err}. Showing last valid preview.");
-            }
+            Err(error) => self.status = format!("Build failed: {error}"),
         }
         self.graph_dirty = false;
     }
 
-    fn refresh_preview(&mut self, ctx: &egui::Context) {
-        match self.project.graph.evaluate_cached(self.project.resolution,
-            &self.preview_source, &mut self.cache)
-        {
-            Ok(value) => {
-                let image = height_image(&value.data);
-                if let Some(texture) = self.texture.as_mut() {
-                    texture.set(image, egui::TextureOptions::LINEAR);
-                } else {
-                    self.texture = Some(ctx.load_texture(
-                        "Gaia selected graph output", image, egui::TextureOptions::LINEAR));
+    fn poll_worker(&mut self, ctx: &egui::Context) {
+        if let Some(result) = self.worker.poll() {
+            match result.data {
+                Ok(result) => {
+                    self.field = result.height;
+                    let image = height_image(&result.preview);
+                    if let Some(texture) = self.texture.as_mut() {
+                        texture.set(image, egui::TextureOptions::LINEAR);
+                    } else {
+                        self.texture = Some(ctx.load_texture(
+                            "Gaia selected graph output", image, egui::TextureOptions::LINEAR
+                        ));
+                    }
+                    self.gpu_dirty = true;
+                    self.status = format!(
+                        "Ready · {}² · {} · {} computed / {} reused",
+                        self.field.size,
+                        result.preview_kind.label(),
+                        result.computed,
+                        result.reused,
+                    );
+                }
+                Err(error) => {
+                    self.status = format!("Graph error: {error} · showing last valid terrain");
                 }
             }
-            Err(error) => self.status = format!(
-                "Preview #{}:{}: {error}", self.preview_source.node, self.preview_source.port
-            ),
+        }
+        if self.worker.is_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 
+    fn refresh_preview(&mut self, _ctx: &egui::Context) {
+        self.graph_dirty = true;
+    }
+
     fn export_selected_map(&mut self) {
-        let output = self.project.graph.evaluate_cached(self.project.resolution,
-            &self.preview_source, &mut self.cache);
+        let output = self.project.graph.evaluate_port(
+            self.project.resolution, &self.preview_source);
         match output {
             Ok(value) => {
                 let path = Path::new(&self.filename)
@@ -134,7 +142,6 @@ impl GaiaApp {
                 self.selected = project.graph.output;
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
-                self.cache.clear();
                 self.graph_dirty = true;
                 self.unsaved = false;
                 self.status = format!("Opened {}", self.filename);
@@ -673,6 +680,7 @@ impl eframe::App for GaiaApp {
         if self.graph_dirty {
             self.rebuild(&ctx);
         }
+        self.poll_worker(&ctx);
         if self.gpu_dirty {
             if let Some(render_state) = frame.wgpu_render_state() {
                 gpu::upload(render_state, &self.field,
