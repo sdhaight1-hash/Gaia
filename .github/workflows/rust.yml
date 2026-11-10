@@ -1,7 +1,7 @@
 name: Rust CI
 on:
   push:
-    branches: [main, feat/terrain-editor-foundation]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -19,3 +19,14 @@ jobs:
         run: cargo check --all-targets
       - name: Unit tests (determinism, graph validation, conservation)
         run: cargo test --lib
+      - name: Build Windows preview executable
+        if: runner.os == 'Windows'
+        run: cargo build --release
+      - name: Upload Windows preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-windows-preview
+          path: target/release/gaia.exe
+          if-no-files-found: error
+          retention-days: 14
