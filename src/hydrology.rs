@@ -38,6 +38,7 @@ pub struct MassLedger {
     pub sediment_outflow: f64,
 }
 
+#[derive(Debug)]
 pub struct HydraulicFields {
     pub height: HeightField,
     pub water: HeightField,
