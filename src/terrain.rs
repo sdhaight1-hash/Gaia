@@ -154,6 +154,20 @@ impl Graph {
     }
 }
 
+impl Project {
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(path, data).map_err(|e| e.to_string())
+    }
+
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let project: Self = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        project.graph.evaluate(project.resolution)?;
+        Ok(project)
+    }
+}
+
 // Smooth, deterministic value noise with a stable integer hash.
 fn hash(x: i32, y: i32, seed: u32) -> f32 {
     let mut h = (x as u32).wrapping_mul(0x9e37_79b9)
