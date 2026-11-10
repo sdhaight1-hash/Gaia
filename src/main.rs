@@ -32,6 +32,7 @@ impl GaiaApp {
         let field = (*project.graph.evaluate_cached(project.resolution,
             &PortRef::height(project.graph.output), &mut cache)
             .expect("default terrain project must evaluate").data).clone();
+        let preview_source = PortRef::height(project.graph.output);
         let yaw = 0.85;
         let pitch = 0.72;
         let distance = 3.7;
