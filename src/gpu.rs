@@ -1,7 +1,7 @@
 //! Native GPU terrain preview. Uses egui's wgpu render pass and a custom shader.
 //! The first vertical slice depth-sorts heightfield cells because the egui pass
 //! has no depth attachment. A dedicated depth-buffered pass is a later milestone.
-use crate::terrain::HeightField;
+use gaia::terrain::HeightField;
 use bytemuck::{Pod, Zeroable};
 use eframe::{
     egui,
@@ -144,11 +144,11 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<Vertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &ATTRS,
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
