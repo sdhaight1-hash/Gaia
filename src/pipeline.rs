@@ -116,13 +116,27 @@ pub struct EvaluationStats {
 
 /// Cache is intentionally independent of the serializable project.
 /// Keeping output fields in Arcs lets sibling connections share actual data.
+/// Alternate compute implementation for graph blend nodes.
+pub trait BlendCompute: Send + Sync {
+    fn blend(
+        &self, a: &HeightField, b: &HeightField,
+        mask: Option<&HeightField>, mix: f32,
+    ) -> Result<HeightField, String>;
+}
+
 #[derive(Default)]
 pub struct GraphCache {
     entries: HashMap<u64, Entry>,
     pub stats: EvaluationStats,
+    backend: Option<Arc<dyn BlendCompute>>,
 }
 
 impl GraphCache {
+    pub fn set_backend(&mut self, backend: Option<Arc<dyn BlendCompute>>) {
+        self.backend = backend;
+        self.clear();
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.stats = EvaluationStats::default();
@@ -221,7 +235,10 @@ impl GraphCache {
                 }
             }
 
-            let output = evaluate_kind(&node.kind, size, &inputs, || build_cancelled(cancelled))?;
+            let backend = if size >= 256 { self.backend.as_deref() } else { None };
+            let output = evaluate_kind(
+                &node.kind, size, &inputs, || build_cancelled(cancelled), backend,
+            )?;
             for (name, field) in &output.fields {
                 if field.data.size != size || field.data.values.iter().any(|v| !v.is_finite()) {
                     return Err(format!("Node #{id} produced invalid '{name}' data"));
@@ -272,8 +289,16 @@ impl NodeKind {
 
 fn evaluate_kind(
     kind: &NodeKind, size: usize, inputs: &[FieldValue], cancelled: impl Fn() -> bool,
+    backend: Option<&dyn BlendCompute>,
 ) -> Result<NodeOutputs, String> {
     let take = |n: usize| &*inputs[n].data;
+    let computed_blend = |a: &HeightField, b: &HeightField,
+        mask: Option<&HeightField>, mix: f32| -> Result<HeightField, String> {
+        match backend {
+            Some(compute) => compute.blend(a, b, mask, mix),
+            None => Ok(blend(a, b, mask, mix)),
+        }
+    };
     let result = match kind {
         NodeKind::Mountain { seed, frequency, height } =>
             NodeOutputs::default().with("height", PortType::Height,
@@ -295,11 +320,11 @@ fn evaluate_kind(
         NodeKind::Blur { radius } => NodeOutputs::default()
             .with("height", PortType::Height, blur(take(0), *radius)),
         NodeKind::Blend { mix } => NodeOutputs::default()
-            .with("height", PortType::Height, blend(take(0), take(1), None, *mix)),
+            .with("height", PortType::Height, computed_blend(take(0), take(1), None, *mix)?),
         NodeKind::Slope => NodeOutputs::default()
             .with("slope", PortType::Mask, slope(take(0))),
         NodeKind::MaskedBlend { mix } => NodeOutputs::default()
-            .with("height", PortType::Height, blend(take(0), take(1), Some(take(2)), *mix)),
+            .with("height", PortType::Height, computed_blend(take(0), take(1), Some(take(2)), *mix)?),
     };
     Ok(result)
 }
