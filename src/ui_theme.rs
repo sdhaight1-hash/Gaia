@@ -53,12 +53,12 @@ pub fn apply(ctx: &egui::Context) {
     visuals.slider_trailing_fill = true;
     ctx.set_visuals(visuals);
 
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.spacing.item_spacing = egui::vec2(9.0, 10.0);
     style.spacing.button_padding = egui::vec2(13.0, 7.0);
     style.spacing.interact_size.y = 29.0;
     style.spacing.slider_width = 185.0;
-    ctx.set_style(style);
+    ctx.set_style_of(egui::Theme::Dark, style);
 }
 
 pub fn panel() -> Frame {
