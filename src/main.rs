@@ -652,7 +652,13 @@ impl GaiaApp {
                 rect.width() / rect.height().max(1.0)
             );
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
-                rect, gpu::TerrainCallback { camera: matrix }
+                rect, gpu::TerrainCallback {
+                    camera: matrix,
+                    pixels: [
+                        (rect.width() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
+                        (rect.height() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
+                    ],
+                }
             ));
         }
         ui.painter().rect_stroke(rect, 9.0, egui::Stroke::new(
