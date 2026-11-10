@@ -5,6 +5,7 @@ use eframe::egui;
 use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
+use gaia::hydrology::HydraulicParameters;
 use std::path::Path;
 
 struct GaiaApp {
@@ -211,6 +212,8 @@ impl GaiaApp {
         ui_theme::section(ui, "TERRAIN OPERATORS");
         self.palette_node(ui, "≋  Erosion", "Mass-conserving thermal talus transport",
             NodeKind::Erosion { iterations: 24, talus: 0.008, strength: 0.28 });
+        self.palette_node(ui, "≈  Hydraulic", "Rain, water flow and conservative sediment transport",
+            NodeKind::Hydraulic { params: HydraulicParameters::default() });
         self.palette_node(ui, "▤  Terrace", "Add stepped elevation bands",
             NodeKind::Terrace { steps: 12, softness: 0.8 });
         self.palette_node(ui, "◎  Blur", "Soften local terrain detail",
@@ -360,6 +363,21 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(talus, 0.0..=0.1).text("Talus")).changed();
                     changed |= ui.add(egui::Slider::new(strength, 0.0..=0.5).text("Transfer")).changed();
                     ui.small("Finite-volume thermal erosion; hydraulic erosion is not yet implemented.");
+                }
+                NodeKind::Hydraulic { params } => {
+                    changed |= ui.add(egui::Slider::new(&mut params.iterations, 0..=200)
+                        .text("Steps")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut params.rain, 0.0..=0.05)
+                        .text("Rainfall")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut params.evaporation, 0.0..=0.3)
+                        .text("Evaporation")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut params.capacity, 0.0..=10.0)
+                        .text("Sediment capacity")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut params.erosion_rate, 0.0..=1.0)
+                        .text("Erosion rate")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut params.deposition_rate, 0.0..=1.0)
+                        .text("Deposition rate")).changed();
+                    ui.small("Conservative experimental hydraulic model; not Gaea's solver.");
                 }
                 NodeKind::Terrace { steps, softness } => {
                     changed |= ui.add(egui::Slider::new(steps, 2..=64).text("Steps")).changed();
@@ -698,7 +716,7 @@ impl eframe::App for GaiaApp {
 fn node_accent(kind: &NodeKind) -> egui::Color32 {
     match kind {
         NodeKind::Mountain { .. } | NodeKind::Noise { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } => ui_theme::AMBER,
         NodeKind::Slope => ui_theme::BLUE,
     }
