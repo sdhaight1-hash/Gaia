@@ -522,7 +522,10 @@ impl eframe::App for GaiaApp {
             .show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
             .exact_size(34.0)
-            .frame(ui_theme::toolbar())
+            .frame(egui::Frame::new()
+                .fill(ui_theme::PANEL)
+                .inner_margin(5)
+                .stroke(egui::Stroke::new(1.0, ui_theme::BORDER)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let status_color = if self.status.contains("failed")
