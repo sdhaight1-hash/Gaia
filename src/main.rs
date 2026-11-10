@@ -172,7 +172,7 @@ impl GaiaApp {
     }
 
     fn add_node(&mut self, kind: NodeKind) {
-        let is_mask = matches!(kind, NodeKind::Slope);
+        let is_mask = matches!(kind, NodeKind::Slope | NodeKind::Curvature | NodeKind::ElevationMask { .. });
         self.selected = self.project.graph.add(kind);
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
@@ -208,6 +208,14 @@ impl GaiaApp {
             NodeKind::Mountain { seed: 42, frequency: 4.0, height: 1.0 });
         self.palette_node(ui, "◈  Noise", "Layer smooth fractal noise",
             NodeKind::Noise { seed: 7, frequency: 6.0, amplitude: 0.4 });
+        self.palette_node(ui, "⛰  Range", "Warped mountain ridges and chains",
+            NodeKind::Range { seed: 31, height: 1.0, roughness: 0.65 });
+        self.palette_node(ui, "◎  Crater", "Impact bowl with elevated rim",
+            NodeKind::Crater { seed: 12, radius: 0.28, depth: 0.65, rim: 0.75 });
+        self.palette_node(ui, "≈  Dunes", "Wind-aligned rippled landforms",
+            NodeKind::Dunes { seed: 9, frequency: 11.0, amplitude: 0.5 });
+        self.palette_node(ui, "⌁  Canyon", "Meandering canyon incision",
+            NodeKind::Canyon { seed: 4, width: 0.07, depth: 0.8 });
         ui.add_space(16.0);
         ui_theme::section(ui, "TERRAIN OPERATORS");
         self.palette_node(ui, "≋  Erosion", "Mass-conserving thermal talus transport",
@@ -220,6 +228,12 @@ impl GaiaApp {
             NodeKind::Blur { radius: 2 });
         self.palette_node(ui, "◢  Slope Mask", "Derive a typed slope mask from terrain",
             NodeKind::Slope);
+        self.palette_node(ui, "◌  Curvature", "Local ridges and concave bowls",
+            NodeKind::Curvature);
+        self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
+            NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
+        self.palette_node(ui, "↝  Warp", "Distort a terrain using two noise fields",
+            NodeKind::Warp { seed: 55, frequency: 4.0, amount: 0.08 });
         ui.add_space(16.0);
         ui_theme::section(ui, "COMPOSITING");
         self.palette_node(ui, "◇  Blend", "Mix the heights from two input nodes",
@@ -358,6 +372,27 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(frequency, 0.2..=40.0).text("Frequency")).changed();
                     changed |= ui.add(egui::Slider::new(amplitude, 0.0..=2.0).text("Amplitude")).changed();
                 }
+                NodeKind::Range { seed, height, roughness } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(height, 0.0..=2.0).text("Height")).changed();
+                    changed |= ui.add(egui::Slider::new(roughness, 0.0..=1.0).text("Roughness")).changed();
+                }
+                NodeKind::Crater { seed, radius, depth, rim } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(radius, 0.1..=0.42).text("Radius")).changed();
+                    changed |= ui.add(egui::Slider::new(depth, 0.0..=1.0).text("Depth")).changed();
+                    changed |= ui.add(egui::Slider::new(rim, 0.0..=1.0).text("Rim height")).changed();
+                }
+                NodeKind::Dunes { seed, frequency, amplitude } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(frequency, 1.0..=40.0).text("Frequency")).changed();
+                    changed |= ui.add(egui::Slider::new(amplitude, 0.0..=2.0).text("Amplitude")).changed();
+                }
+                NodeKind::Canyon { seed, width, depth } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(width, 0.015..=0.3).text("Width")).changed();
+                    changed |= ui.add(egui::Slider::new(depth, 0.0..=1.0).text("Depth")).changed();
+                }
                 NodeKind::Erosion { iterations, talus, strength } => {
                     changed |= ui.add(egui::Slider::new(iterations, 0..=120).text("Iterations")).changed();
                     changed |= ui.add(egui::Slider::new(talus, 0.0..=0.1).text("Talus")).changed();
@@ -391,6 +426,19 @@ impl GaiaApp {
                 }
                 NodeKind::Slope => {
                     ui.label("Slope mask derived from surrounding elevation differences.");
+                }
+                NodeKind::Curvature => {
+                    ui.label("Curvature mask: dark ridges, bright bowls, midgray flat terrain.");
+                }
+                NodeKind::ElevationMask { low, high, feather } => {
+                    changed |= ui.add(egui::Slider::new(low, 0.0..=1.0).text("Min height")).changed();
+                    changed |= ui.add(egui::Slider::new(high, 0.0..=2.0).text("Max height")).changed();
+                    changed |= ui.add(egui::Slider::new(feather, 0.001..=0.5).text("Feather")).changed();
+                }
+                NodeKind::Warp { seed, frequency, amount } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(frequency, 0.5..=40.0).text("Frequency")).changed();
+                    changed |= ui.add(egui::Slider::new(amount, 0.0..=0.25).text("Strength")).changed();
                 }
             }
         } else {
@@ -715,10 +763,12 @@ impl eframe::App for GaiaApp {
 
 fn node_accent(kind: &NodeKind) -> egui::Color32 {
     match kind {
-        NodeKind::Mountain { .. } | NodeKind::Noise { .. } => ui_theme::ACCENT,
+        NodeKind::Mountain { .. } | NodeKind::Noise { .. } |
+        NodeKind::Range { .. } | NodeKind::Crater { .. } |
+        NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } => ui_theme::AMBER,
-        NodeKind::Slope => ui_theme::BLUE,
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
 }
 
