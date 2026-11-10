@@ -29,6 +29,7 @@ pub enum NodeKind {
     Mountain { seed: u32, frequency: f32, height: f32 },
     Noise { seed: u32, frequency: f32, amplitude: f32 },
     Erosion { iterations: u32, talus: f32, strength: f32 },
+    Hydraulic { params: HydraulicParameters }, 
     Terrace { steps: u32, softness: f32 },
     Blur { radius: u32 },
     Blend { mix: f32 },
