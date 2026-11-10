@@ -3,11 +3,13 @@ mod ui_theme;
 
 use eframe::egui;
 use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
+use gaia::pipeline::{GraphCache, PortRef, PortType};
 use std::path::Path;
 
 struct GaiaApp {
     project: Project,
     field: HeightField,
+    cache: GraphCache,
     texture: Option<egui::TextureHandle>,
     selected: u64,
     filename: String,
@@ -25,8 +27,10 @@ impl GaiaApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_theme::apply(&cc.egui_ctx);
         let project = Project::default();
-        let field = project.graph.evaluate(project.resolution)
-            .expect("default terrain project must evaluate");
+        let mut cache = GraphCache::default();
+        let field = (*project.graph.evaluate_cached(project.resolution,
+            &PortRef::height(project.graph.output), &mut cache)
+            .expect("default terrain project must evaluate").data).clone();
         let yaw = 0.85;
         let pitch = 0.72;
         let distance = 3.7;
@@ -40,6 +44,7 @@ impl GaiaApp {
             selected: project.graph.output,
             project,
             field,
+            cache,
             texture,
             filename: "terrain.gaia.json".to_string(),
             status: "Ready. Drag on the 3D preview to orbit; scroll to zoom.".to_string(),
@@ -54,9 +59,10 @@ impl GaiaApp {
     }
 
     fn rebuild(&mut self, ctx: &egui::Context) {
-        match self.project.graph.evaluate(self.project.resolution) {
+        match self.project.graph.evaluate_cached(self.project.resolution,
+            &PortRef::height(self.project.graph.output), &mut self.cache) {
             Ok(field) => {
-                self.field = field;
+                self.field = (*field.data).clone();
                 let image = height_image(&self.field);
                 if let Some(texture) = self.texture.as_mut() {
                     texture.set(image, egui::TextureOptions::LINEAR);
@@ -67,8 +73,9 @@ impl GaiaApp {
                 }
                 self.gpu_dirty = true;
                 self.status = format!(
-                    "Built {} × {} terrain from node #{}",
+                    "Built {} × {} terrain from node #{} · {} computed / {} reused",
                     self.field.size, self.field.size, self.project.graph.output,
+                    self.cache.stats.computed, self.cache.stats.reused,
                 );
             }
             Err(err) => {
@@ -93,6 +100,7 @@ impl GaiaApp {
             Ok(project) => {
                 self.selected = project.graph.output;
                 self.project = project;
+                self.cache.clear();
                 self.graph_dirty = true;
                 self.unsaved = false;
                 self.status = format!("Opened {}", self.filename);
@@ -153,10 +161,14 @@ impl GaiaApp {
             NodeKind::Terrace { steps: 12, softness: 0.8 });
         self.palette_node(ui, "◎  Blur", "Soften local terrain detail",
             NodeKind::Blur { radius: 2 });
+        self.palette_node(ui, "◢  Slope Mask", "Derive a typed slope mask from terrain",
+            NodeKind::Slope);
         ui.add_space(16.0);
         ui_theme::section(ui, "COMPOSITING");
         self.palette_node(ui, "◇  Blend", "Mix the heights from two input nodes",
             NodeKind::Blend { mix: 0.5 });
+        self.palette_node(ui, "◈  Masked Blend", "Blend two heightfields using a mask port",
+            NodeKind::MaskedBlend { mix: 1.0 });
         ui.add_space(26.0);
         ui.separator();
         ui.label(egui::RichText::new("TIP").size(11.0)
@@ -234,9 +246,11 @@ impl GaiaApp {
         ui.add_space(14.0);
         ui.separator();
         ui_theme::section(ui, "SELECTED NODE");
-        let options: Vec<(u64, String)> = self.project.graph.nodes.iter().map(|n| {
-            (n.id, format!("#{} {}", n.id, n.kind.label()))
-        }).collect();
+        let options: Vec<(PortRef, PortType, String)> = self.project.graph.nodes.iter()
+            .flat_map(|node| node.kind.output_ports().iter().map(|(port, kind)| {
+                (PortRef::new(node.id, *port), *kind,
+                    format!("#{} {} · {}", node.id, node.kind.label(), port))
+            })).collect();
         let mut changed = false;
         let mut set_output = false;
         if let Some(node) = self.project.graph.nodes.iter_mut().find(|n| n.id == self.selected) {
@@ -245,24 +259,27 @@ impl GaiaApp {
             ui.label(egui::RichText::new(format!("NODE  ·  #{:03}", node.id))
                 .monospace().size(11.0).color(ui_theme::MUTED));
             ui.add_space(9.0);
-            if ui.add_sized([ui.available_width(), 32.0],
-                egui::Button::new("Set as output").fill(ui_theme::PANEL_RAISED)
-            ).on_hover_text("Preview the result of this node").clicked() {
+            let can_output = node.kind.output_ports().iter()
+                .any(|(name, ty)| *name == "height" && *ty == PortType::Height);
+            if ui.add_enabled_ui(can_output, |ui| {
+                ui.add_sized([ui.available_width(), 32.0],
+                    egui::Button::new("Set as output").fill(ui_theme::PANEL_RAISED))
+            }).inner.on_hover_text("Use this node as the terrain height output").clicked() {
                 set_output = true;
             }
             for (index, input) in node.inputs.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("Input {}", index + 1));
+                    let required = node.kind.input_type(index);
                     let current_name = options.iter()
-                        .find(|(id, _)| *id == *input)
-                        .map(|(_, name)| name.as_str())
-                        .unwrap_or("Missing");
+                        .find(|(reference, _, _)| *reference == *input)
+                        .map(|(_, _, name)| name.as_str()).unwrap_or("Invalid connection");
                     egui::ComboBox::from_id_salt(("input", node.id, index))
                         .selected_text(current_name)
                         .show_ui(ui, |ui| {
-                            for (id, name) in &options {
-                                if *id != node.id {
-                                    changed |= ui.selectable_value(input, *id, name).changed();
+                            for (reference, kind, name) in &options {
+                                if reference.node != node.id && Some(*kind) == required {
+                                    changed |= ui.selectable_value(input, reference.clone(), name).changed();
                                 }
                             }
                         });
@@ -293,8 +310,11 @@ impl GaiaApp {
                 NodeKind::Blur { radius } => {
                     changed |= ui.add(egui::Slider::new(radius, 1..=8).text("Radius")).changed();
                 }
-                NodeKind::Blend { mix } => {
+                NodeKind::Blend { mix } | NodeKind::MaskedBlend { mix } => {
                     changed |= ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")).changed();
+                }
+                NodeKind::Slope => {
+                    ui.label("Slope mask derived from surrounding elevation differences.");
                 }
             }
         } else {
@@ -342,7 +362,7 @@ impl GaiaApp {
         let nodes = self.project.graph.nodes.clone();
         for node in &nodes {
             for (i, source) in node.inputs.iter().enumerate() {
-                if let Some(parent) = nodes.iter().find(|n| n.id == *source) {
+                if let Some(parent) = nodes.iter().find(|n| n.id == source.node) {
                     let start = rect.left_top() + egui::vec2(
                         parent.position[0] + WIDTH, parent.position[1] + 28.0
                     );
