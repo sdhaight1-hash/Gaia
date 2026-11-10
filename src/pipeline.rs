@@ -2,6 +2,7 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
+use crate::geology::{mountain_range, crater, dunes, canyon, warp, curvature, elevation_mask};
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
@@ -264,6 +265,8 @@ impl NodeKind {
     pub fn output_ports(&self) -> &'static [(&'static str, PortType)] {
         const HEIGHT: &[(&str, PortType)] = &[("height", PortType::Height)];
         const SLOPE: &[(&str, PortType)] = &[("slope", PortType::Mask)];
+        const CURVATURE: &[(&str, PortType)] = &[("curvature", PortType::Mask)];
+        const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const EROSION: &[(&str, PortType)] = &[
             ("height", PortType::Height),
             ("wear", PortType::Mask),
@@ -281,17 +284,21 @@ impl NodeKind {
             Self::Erosion { .. } => EROSION,
             Self::Hydraulic { .. } => HYDRAULIC,
             Self::Slope => SLOPE,
+            Self::Curvature => CURVATURE,
+            Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
         }
     }
 
     pub fn input_type(&self, slot: usize) -> Option<PortType> {
         match (self, slot) {
-            (Self::Mountain { .. } | Self::Noise { .. }, _) => None,
+            (Self::Mountain { .. } | Self::Noise { .. } |
+             Self::Range { .. } | Self::Crater { .. } |
+             Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::ElevationMask { .. } | Self::Warp { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -316,6 +323,14 @@ fn evaluate_kind(
         NodeKind::Noise { seed, frequency, amplitude } =>
             NodeOutputs::default().with("height", PortType::Height,
                 generate_noise(size, *seed, *frequency, *amplitude)),
+        NodeKind::Range { seed, height, roughness } => NodeOutputs::default()
+            .with("height", PortType::Height, mountain_range(size, *seed, *height, *roughness)),
+        NodeKind::Crater { seed, radius, depth, rim } => NodeOutputs::default()
+            .with("height", PortType::Height, crater(size, *seed, *radius, *depth, *rim)),
+        NodeKind::Dunes { seed, frequency, amplitude } => NodeOutputs::default()
+            .with("height", PortType::Height, dunes(size, *seed, *frequency, *amplitude)),
+        NodeKind::Canyon { seed, width, depth } => NodeOutputs::default()
+            .with("height", PortType::Height, canyon(size, *seed, *width, *depth)),
         NodeKind::Erosion { iterations, talus, strength } => {
             let data = thermal_erosion_fields_checked(
                 take(0), (*iterations).min(200), *talus, *strength, &cancelled
@@ -343,6 +358,14 @@ fn evaluate_kind(
             .with("height", PortType::Height, computed_blend(take(0), take(1), None, *mix)?),
         NodeKind::Slope => NodeOutputs::default()
             .with("slope", PortType::Mask, slope(take(0))),
+        NodeKind::Curvature => NodeOutputs::default()
+            .with("curvature", PortType::Mask, curvature(take(0))),
+        NodeKind::ElevationMask { low, high, feather } => NodeOutputs::default()
+            .with("mask", PortType::Mask,
+                elevation_mask(take(0), *low, *high, *feather)),
+        NodeKind::Warp { seed, frequency, amount } => NodeOutputs::default()
+            .with("height", PortType::Height,
+                warp(take(0), *seed, *frequency, *amount)),
         NodeKind::MaskedBlend { mix } => NodeOutputs::default()
             .with("height", PortType::Height, computed_blend(take(0), take(1), Some(take(2)), *mix)?),
     };
