@@ -618,7 +618,8 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
     match kind {
         NodeKind::Mountain { .. } | NodeKind::Noise { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
-        NodeKind::Blend { .. } => ui_theme::AMBER,
+        NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } => ui_theme::AMBER,
+        NodeKind::Slope => ui_theme::BLUE,
     }
 }
 
