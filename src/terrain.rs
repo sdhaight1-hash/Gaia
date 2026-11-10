@@ -27,6 +27,10 @@ impl HeightField {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NodeKind {
     Mountain { seed: u32, frequency: f32, height: f32 },
+    Range { seed: u32, height: f32, roughness: f32 },
+    Crater { seed: u32, radius: f32, depth: f32, rim: f32 },
+    Dunes { seed: u32, frequency: f32, amplitude: f32 },
+    Canyon { seed: u32, width: f32, depth: f32 },
     Noise { seed: u32, frequency: f32, amplitude: f32 },
     Erosion { iterations: u32, talus: f32, strength: f32 },
     Hydraulic { params: HydraulicParameters }, 
@@ -34,6 +38,9 @@ pub enum NodeKind {
     Blur { radius: u32 },
     Blend { mix: f32 },
     Slope,
+    Curvature,
+    ElevationMask { low: f32, high: f32, feather: f32 },
+    Warp { seed: u32, frequency: f32, amount: f32 },
     MaskedBlend { mix: f32 },
 }
 
@@ -41,6 +48,10 @@ impl NodeKind {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Mountain { .. } => "Mountain",
+            Self::Range { .. } => "Mountain range",
+            Self::Crater { .. } => "Crater",
+            Self::Dunes { .. } => "Dunes",
+            Self::Canyon { .. } => "Canyon",
             Self::Noise { .. } => "Noise",
             Self::Erosion { .. } => "Thermal erosion",
             Self::Hydraulic { .. } => "Hydraulic erosion",
@@ -48,13 +59,18 @@ impl NodeKind {
             Self::Blur { .. } => "Blur",
             Self::Blend { .. } => "Blend",
             Self::Slope => "Slope mask",
+            Self::Curvature => "Curvature mask",
+            Self::ElevationMask { .. } => "Elevation mask",
+            Self::Warp { .. } => "Warp",
             Self::MaskedBlend { .. } => "Masked Blend",
         }
     }
 
     pub fn input_count(&self) -> usize {
         match self {
-            Self::Mountain { .. } | Self::Noise { .. } => 0,
+            Self::Mountain { .. } | Self::Noise { .. } |
+                Self::Range { .. } | Self::Crater { .. } |
+                Self::Dunes { .. } | Self::Canyon { .. } => 0,
             Self::Blend { .. } => 2,
             Self::MaskedBlend { .. } => 3,
             _ => 1,
