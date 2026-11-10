@@ -1,4 +1,5 @@
 mod gpu;
+mod ui_theme;
 
 use eframe::egui;
 use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
@@ -17,11 +18,12 @@ struct GaiaApp {
     view_2d: bool,
     graph_dirty: bool,
     gpu_dirty: bool,
+    unsaved: bool,
 }
 
 impl GaiaApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        ui_theme::apply(&cc.egui_ctx);
         let project = Project::default();
         let field = project.graph.evaluate(project.resolution)
             .expect("default terrain project must evaluate");
@@ -47,6 +49,7 @@ impl GaiaApp {
             view_2d: false,
             graph_dirty: false,
             gpu_dirty: false,
+            unsaved: false,
         }
     }
 
@@ -75,88 +78,176 @@ impl GaiaApp {
         self.graph_dirty = false;
     }
 
+    fn save_project(&mut self) {
+        self.status = match self.project.save(Path::new(&self.filename)) {
+            Ok(()) => {
+                self.unsaved = false;
+                format!("Saved {}", self.filename)
+            }
+            Err(error) => format!("Save failed: {error}"),
+        };
+    }
+
+    fn open_project(&mut self) {
+        match Project::load(Path::new(&self.filename)) {
+            Ok(project) => {
+                self.selected = project.graph.output;
+                self.project = project;
+                self.graph_dirty = true;
+                self.unsaved = false;
+                self.status = format!("Opened {}", self.filename);
+            }
+            Err(error) => self.status = format!("Open failed: {error}"),
+        }
+    }
+
+    fn export_heightmap(&mut self) {
+        let path = Path::new(&self.filename).with_extension("png");
+        self.status = match export_png16(&self.field, &path) {
+            Ok(()) => format!("Exported heightmap to {}", path.display()),
+            Err(error) => format!("PNG export failed: {error}"),
+        };
+    }
+
+    fn export_mesh(&mut self) {
+        let path = Path::new(&self.filename).with_extension("obj");
+        self.status = match export_obj(&self.field, &path) {
+            Ok(()) => format!("Exported mesh to {}", path.display()),
+            Err(error) => format!("OBJ export failed: {error}"),
+        };
+    }
+
+    fn add_node(&mut self, kind: NodeKind) {
+        self.selected = self.project.graph.add(kind);
+        self.graph_dirty = true;
+        self.unsaved = true;
+    }
+
+    fn palette_node(&mut self, ui: &mut egui::Ui, name: &str, detail: &str, kind: NodeKind) {
+        let button = egui::Button::new(
+            egui::RichText::new(name).size(13.0).color(ui_theme::TEXT)
+        ).fill(ui_theme::PANEL_RAISED);
+        let response = ui.add_sized([ui.available_width(), 34.0], button)
+            .on_hover_text(detail);
+        if response.clicked() {
+            self.add_node(kind);
+        }
+    }
+
+    fn library(&mut self, ui: &mut egui::Ui) {
+        ui_theme::section(ui, "NODE LIBRARY");
+        ui.label(egui::RichText::new("Create").size(21.0).strong().color(ui_theme::TEXT));
+        ui.label(egui::RichText::new("Build your terrain with procedural blocks.")
+            .size(12.0).color(ui_theme::MUTED));
+        ui.add_space(20.0);
+        ui_theme::section(ui, "GENERATORS");
+        self.palette_node(ui, "▲  Mountain", "Create a ridged mountain mass",
+            NodeKind::Mountain { seed: 42, frequency: 4.0, height: 1.0 });
+        self.palette_node(ui, "◈  Noise", "Layer smooth fractal noise",
+            NodeKind::Noise { seed: 7, frequency: 6.0, amplitude: 0.4 });
+        ui.add_space(16.0);
+        ui_theme::section(ui, "TERRAIN OPERATORS");
+        self.palette_node(ui, "≋  Erosion", "Mass-conserving thermal talus transport",
+            NodeKind::Erosion { iterations: 24, talus: 0.008, strength: 0.28 });
+        self.palette_node(ui, "▤  Terrace", "Add stepped elevation bands",
+            NodeKind::Terrace { steps: 12, softness: 0.8 });
+        self.palette_node(ui, "◎  Blur", "Soften local terrain detail",
+            NodeKind::Blur { radius: 2 });
+        ui.add_space(16.0);
+        ui_theme::section(ui, "COMPOSITING");
+        self.palette_node(ui, "◇  Blend", "Mix the heights from two input nodes",
+            NodeKind::Blend { mix: 0.5 });
+        ui.add_space(26.0);
+        ui.separator();
+        ui.label(egui::RichText::new("TIP").size(11.0)
+            .color(ui_theme::ACCENT).strong());
+        ui.label(egui::RichText::new(
+            "Add a node, select it in the graph, then edit its connections in Properties."
+        ).size(12.0).color(ui_theme::MUTED));
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("GAIA");
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("◈").size(22.0).color(ui_theme::ACCENT));
+            ui.label(egui::RichText::new("GAIA").size(20.0)
+                .strong().color(ui_theme::TEXT));
+            ui.label(egui::RichText::new("TERRAIN STUDIO").size(10.0)
+                .color(ui_theme::MUTED));
             ui.separator();
-            ui.label("Project file");
-            ui.add(egui::TextEdit::singleline(&mut self.filename).desired_width(185.0));
-            if ui.button("Save").clicked() {
-                self.status = match self.project.save(Path::new(&self.filename)) {
-                    Ok(()) => format!("Saved {}", self.filename),
-                    Err(e) => format!("Save failed: {e}"),
-                };
+            ui.add(egui::TextEdit::singleline(&mut self.filename)
+                .desired_width(185.0).hint_text("project.gaia.json"))
+                .on_hover_text("Project location (relative to the current folder)");
+            if self.unsaved {
+                ui.label(egui::RichText::new("●").color(ui_theme::AMBER))
+                    .on_hover_text("Unsaved project changes");
             }
-            if ui.button("Open").clicked() {
-                match Project::load(Path::new(&self.filename)) {
-                    Ok(project) => {
-                        self.selected = project.graph.output;
-                        self.project = project;
-                        self.graph_dirty = true;
-                    }
-                    Err(e) => self.status = format!("Open failed: {e}"),
+            if ui.button("Open").on_hover_text("Open project · Ctrl+O").clicked() {
+                self.open_project();
+            }
+            if ui.button("Save").on_hover_text("Save project · Ctrl+S").clicked() {
+                self.save_project();
+            }
+            ui.menu_button("Export ▾", |ui| {
+                if ui.button("16-bit Heightmap  ·  PNG").clicked() {
+                    self.export_heightmap();
+                    ui.close();
                 }
-            }
-            if ui.button("Export 16-bit PNG").clicked() {
-                let path = Path::new(&self.filename).with_extension("png");
-                self.status = match export_png16(&self.field, &path) {
-                    Ok(()) => format!("Exported {}", path.display()),
-                    Err(e) => format!("PNG export failed: {e}"),
-                };
-            }
-            if ui.button("Export OBJ").clicked() {
-                let path = Path::new(&self.filename).with_extension("obj");
-                self.status = match export_obj(&self.field, &path) {
-                    Ok(()) => format!("Exported {}", path.display()),
-                    Err(e) => format!("OBJ export failed: {e}"),
-                };
-            }
+                if ui.button("3D Terrain Mesh  ·  OBJ").clicked() {
+                    self.export_mesh();
+                    ui.close();
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(
+                    egui::RichText::new("↻  Rebuild").color(ui_theme::BG).strong()
+                ).fill(ui_theme::ACCENT)).on_hover_text("Regenerate the terrain").clicked() {
+                    self.graph_dirty = true;
+                }
+            });
         });
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Terrain");
+        ui_theme::section(ui, "PROPERTIES");
+        ui.label(egui::RichText::new("Inspector").size(21.0)
+            .strong().color(ui_theme::TEXT));
+        ui.label(egui::RichText::new("Edit the selected terrain node.")
+            .size(12.0).color(ui_theme::MUTED));
+        ui.add_space(15.0);
+        ui.separator();
+        ui_theme::section(ui, "PROJECT");
         ui.horizontal(|ui| {
             ui.label("Resolution");
             let before = self.project.resolution;
             egui::ComboBox::from_id_salt("resolution")
-                .selected_text(format!("{}²", self.project.resolution))
+                .selected_text(format!("{} × {}", self.project.resolution, self.project.resolution))
                 .show_ui(ui, |ui| {
                     for size in [64, 128, 256, 512] {
-                        ui.selectable_value(&mut self.project.resolution, size, format!("{size}²"));
+                        ui.selectable_value(&mut self.project.resolution, size, format!("{size} × {size}"));
                     }
                 });
             if before != self.project.resolution {
                 self.graph_dirty = true;
+                self.unsaved = true;
             }
         });
+        ui.add_space(14.0);
         ui.separator();
-        ui.heading("Add node");
-        ui.horizontal_wrapped(|ui| {
-            for (name, kind) in [
-                ("Mountain", NodeKind::Mountain { seed: 42, frequency: 4.0, height: 1.0 }),
-                ("Noise", NodeKind::Noise { seed: 7, frequency: 6.0, amplitude: 0.4 }),
-                ("Erosion", NodeKind::Erosion { iterations: 24, talus: 0.008, strength: 0.28 }),
-                ("Terrace", NodeKind::Terrace { steps: 12, softness: 0.8 }),
-                ("Blur", NodeKind::Blur { radius: 2 }),
-                ("Blend", NodeKind::Blend { mix: 0.5 }),
-            ] {
-                if ui.button(name).clicked() {
-                    self.selected = self.project.graph.add(kind);
-                    self.graph_dirty = true;
-                }
-            }
-        });
-        ui.separator();
-        ui.heading("Node inspector");
+        ui_theme::section(ui, "SELECTED NODE");
         let options: Vec<(u64, String)> = self.project.graph.nodes.iter().map(|n| {
             (n.id, format!("#{} {}", n.id, n.kind.label()))
         }).collect();
         let mut changed = false;
         let mut set_output = false;
         if let Some(node) = self.project.graph.nodes.iter_mut().find(|n| n.id == self.selected) {
-            ui.strong(format!("#{} {}", node.id, node.kind.label()));
-            if ui.button("Use as graph output").clicked() {
+            ui.label(egui::RichText::new(node.kind.label()).size(18.0)
+                .strong().color(ui_theme::ACCENT));
+            ui.label(egui::RichText::new(format!("NODE  ·  #{:03}", node.id))
+                .monospace().size(11.0).color(ui_theme::MUTED));
+            ui.add_space(9.0);
+            if ui.add_sized([ui.available_width(), 32.0],
+                egui::Button::new("Set as output").fill(ui_theme::PANEL_RAISED)
+            ).on_hover_text("Preview the result of this node").clicked() {
                 set_output = true;
             }
             for (index, input) in node.inputs.iter_mut().enumerate() {
@@ -215,99 +306,167 @@ impl GaiaApp {
         }
         if changed {
             self.graph_dirty = true;
+            self.unsaved = true;
         }
         ui.separator();
-        ui.small("Drag nodes to arrange the graph. Connect them using the input selectors above.");
-        ui.small("Graph cycles and missing connections are checked before every rebuild.");
+        ui.label(egui::RichText::new("Drag nodes to arrange your graph. Change connections with the input selectors.")
+            .size(12.0).color(ui_theme::MUTED));
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Connections are validated before rebuilding.")
+            .size(12.0).color(ui_theme::MUTED));
     }
 
     fn graph_canvas(&mut self, ui: &mut egui::Ui) {
-        let extent = egui::vec2(ui.available_width().max(900.0), 370.0);
+        const WIDTH: f32 = 194.0;
+        const HEIGHT: f32 = 74.0;
+        let extent = egui::vec2(ui.available_width().max(920.0), 360.0);
         let (rect, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(19, 22, 30));
+        painter.rect_filled(rect, 8.0, ui_theme::CANVAS);
+
+        // Deliberately subtle grid: nodes and dataflow remain the focal point.
+        let grid = egui::Stroke::new(0.65, egui::Color32::from_rgb(29, 37, 43));
+        for x in 0..=(extent.x / 28.0) as usize {
+            let at = rect.left() + x as f32 * 28.0;
+            painter.line_segment(
+                [egui::pos2(at, rect.top()), egui::pos2(at, rect.bottom())], grid
+            );
+        }
+        for y in 0..=(extent.y / 28.0) as usize {
+            let at = rect.top() + y as f32 * 28.0;
+            painter.line_segment(
+                [egui::pos2(rect.left(), at), egui::pos2(rect.right(), at)], grid
+            );
+        }
+
         let nodes = self.project.graph.nodes.clone();
         for node in &nodes {
             for (i, source) in node.inputs.iter().enumerate() {
                 if let Some(parent) = nodes.iter().find(|n| n.id == *source) {
-                    let start = rect.left_top() + egui::vec2(parent.position[0] + 182.0, parent.position[1] + 28.0);
-                    let end = rect.left_top() + egui::vec2(node.position[0], node.position[1] + 22.0 + i as f32 * 13.0);
+                    let start = rect.left_top() + egui::vec2(
+                        parent.position[0] + WIDTH, parent.position[1] + 28.0
+                    );
+                    let end = rect.left_top() + egui::vec2(
+                        node.position[0], node.position[1] + 29.0 + i as f32 * 17.0
+                    );
                     let mut points = Vec::with_capacity(21);
                     for k in 0..=20 {
                         let t = k as f32 / 20.0;
                         let a = start;
-                        let b = start + egui::vec2(65.0, 0.0);
-                        let c = end - egui::vec2(65.0, 0.0);
+                        let b = start + egui::vec2(60.0, 0.0);
+                        let c = end - egui::vec2(60.0, 0.0);
                         let d = end;
-                        let s = 1.0 - t;
+                        let inv = 1.0 - t;
                         points.push(egui::pos2(
-                            a.x*s*s*s + 3.0*b.x*s*s*t + 3.0*c.x*s*t*t + d.x*t*t*t,
-                            a.y*s*s*s + 3.0*b.y*s*s*t + 3.0*c.y*s*t*t + d.y*t*t*t,
+                            a.x * inv * inv * inv + 3.0 * b.x * inv * inv * t
+                                + 3.0 * c.x * inv * t * t + d.x * t * t * t,
+                            a.y * inv * inv * inv + 3.0 * b.y * inv * inv * t
+                                + 3.0 * c.y * inv * t * t + d.y * t * t * t,
                         ));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, egui::Color32::from_rgb(118, 169, 167))));
+                    painter.add(egui::Shape::line(
+                        points, egui::Stroke::new(2.0, node_accent(&parent.kind))
+                    ));
                 }
             }
         }
         for node in &mut self.project.graph.nodes {
             let top_left = rect.left_top() + egui::vec2(node.position[0], node.position[1]);
-            let node_rect = egui::Rect::from_min_size(top_left, egui::vec2(182.0, 58.0));
-            let response = ui.interact(node_rect, ui.scope_id().with(("node", node.id)), egui::Sense::click_and_drag());
+            let node_rect = egui::Rect::from_min_size(top_left, egui::vec2(WIDTH, HEIGHT));
+            let response = ui.interact(
+                node_rect, ui.scope_id().with(("node", node.id)),
+                egui::Sense::click_and_drag()
+            ).on_hover_text("Click to inspect · drag to move");
             if response.clicked() {
                 self.selected = node.id;
             }
             if response.dragged() {
-                let delta = response.drag_delta();
-                node.position[0] = (node.position[0] + delta.x).max(0.0);
-                node.position[1] = (node.position[1] + delta.y).max(0.0);
+                // drag_motion is the per-frame delta; drag_delta would compound.
+                let motion = response.drag_motion();
+                node.position[0] = (node.position[0] + motion.x).max(0.0);
+                node.position[1] = (node.position[1] + motion.y).max(0.0);
                 self.selected = node.id;
+                self.unsaved = true;
             }
+            let color = node_accent(&node.kind);
             let selected = self.selected == node.id;
-            painter.rect_filled(node_rect, 7.0, if selected {
-                egui::Color32::from_rgb(49, 75, 78)
+            let background = if selected {
+                egui::Color32::from_rgb(36, 56, 59)
+            } else if response.hovered() {
+                egui::Color32::from_rgb(41, 50, 59)
             } else {
-                egui::Color32::from_rgb(37, 43, 52)
-            });
-            painter.rect_stroke(node_rect, 7.0,
-                egui::Stroke::new(if selected { 2.0 } else { 1.0 },
-                    if selected { egui::Color32::LIGHT_GREEN } else { egui::Color32::from_gray(85) }),
-                egui::StrokeKind::Outside,
+                ui_theme::PANEL_RAISED
+            };
+            painter.rect_filled(node_rect, 9.0, background);
+            painter.rect_stroke(
+                node_rect, 9.0,
+                egui::Stroke::new(if selected { 1.8 } else { 1.0 },
+                    if selected { ui_theme::ACCENT } else { ui_theme::BORDER }),
+                egui::StrokeKind::Outside
             );
-            let label = format!("#{} {}", node.id, node.kind.label());
-            painter.text(node_rect.left_top() + egui::vec2(12.0, 9.0),
-                egui::Align2::LEFT_TOP, label, egui::FontId::proportional(15.0), egui::Color32::WHITE);
-            painter.text(node_rect.left_bottom() + egui::vec2(12.0, -20.0),
-                egui::Align2::LEFT_TOP,
-                if node.id == self.project.graph.output { "OUTPUT" } else { "Terrain → Terrain" },
-                egui::FontId::monospace(11.0), egui::Color32::from_rgb(143, 187, 179));
+            painter.rect_filled(egui::Rect::from_min_max(
+                node_rect.left_top() + egui::vec2(0.0, 10.0),
+                node_rect.left_bottom() + egui::vec2(3.0, -10.0)
+            ), 2.0, color);
+            painter.text(node_rect.left_top() + egui::vec2(14.0, 11.0),
+                egui::Align2::LEFT_TOP, node.kind.label(),
+                egui::FontId::proportional(15.0), ui_theme::TEXT);
+            painter.text(node_rect.left_top() + egui::vec2(14.0, 41.0),
+                egui::Align2::LEFT_TOP, format!("NODE #{:03}", node.id),
+                egui::FontId::monospace(10.0), ui_theme::MUTED);
+            for i in 0..node.inputs.len() {
+                painter.circle_filled(
+                    node_rect.left_top() + egui::vec2(0.0, 29.0 + i as f32 * 17.0),
+                    4.0, ui_theme::BLUE
+                );
+            }
+            painter.circle_filled(
+                node_rect.left_top() + egui::vec2(WIDTH, 28.0), 4.0, color
+            );
+            if node.id == self.project.graph.output {
+                painter.text(node_rect.right_bottom() + egui::vec2(-10.0, -12.0),
+                    egui::Align2::RIGHT_BOTTOM, "OUTPUT",
+                    egui::FontId::monospace(10.0), ui_theme::ACCENT);
+            }
         }
     }
 
     fn viewport(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.view_2d, false, "3D terrain");
-            ui.selectable_value(&mut self.view_2d, true, "Heightmap");
+            ui.label(egui::RichText::new("Preview").size(19.0)
+                .strong().color(ui_theme::TEXT));
             ui.separator();
-            ui.label(format!("{} × {} samples", self.field.size, self.field.size));
-            if ui.button("Reset view").clicked() {
-                self.yaw = 0.85;
-                self.pitch = 0.72;
-                self.distance = 3.7;
-                self.gpu_dirty = true;
-            }
+            ui.selectable_value(&mut self.view_2d, false, "3D");
+            ui.selectable_value(&mut self.view_2d, true, "Heightmap");
+            ui.label(egui::RichText::new(format!(
+                "{}²", self.field.size
+            )).monospace().size(11.0).color(ui_theme::MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Reset camera").clicked() {
+                    self.yaw = 0.85;
+                    self.pitch = 0.72;
+                    self.distance = 3.7;
+                    self.gpu_dirty = true;
+                }
+            });
         });
+        ui.add_space(9.0);
         let size = ui.available_size().max(egui::vec2(100.0, 100.0));
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
-        ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(45, 57, 70));
+        ui.painter().rect_filled(rect, 9.0, ui_theme::CANVAS);
         if self.view_2d {
             if let Some(texture) = &self.texture {
-                ui.painter().image(texture.id(), rect,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                let side = rect.width().min(rect.height());
+                let image_rect = egui::Rect::from_center_size(rect.center(),
+                    egui::vec2(side, side));
+                ui.painter().image(texture.id(), image_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO,
+                        egui::Pos2::new(1.0, 1.0)),
                     egui::Color32::WHITE);
             }
         } else {
             if response.dragged() {
-                let motion = response.drag_delta();
+                let motion = response.drag_motion();
                 if motion.length_sq() > 0.0 {
                     self.yaw += motion.x * 0.008;
                     self.pitch = (self.pitch - motion.y * 0.008).clamp(0.2, 1.5);
@@ -317,44 +476,108 @@ impl GaiaApp {
             if response.hovered() {
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                 if scroll.abs() > 0.1 {
-                    self.distance = (self.distance * (1.0 - scroll * 0.001)).clamp(1.5, 12.0);
+                    self.distance = (self.distance * (1.0 - scroll * 0.001))
+                        .clamp(1.5, 12.0);
                     self.gpu_dirty = true;
                 }
             }
             let matrix = gpu::view_matrix(
-                self.yaw, self.pitch, self.distance, rect.width() / rect.height().max(1.0)
+                self.yaw, self.pitch, self.distance,
+                rect.width() / rect.height().max(1.0)
             );
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
-                rect, gpu::TerrainCallback { camera: matrix },
+                rect, gpu::TerrainCallback { camera: matrix }
             ));
         }
+        ui.painter().rect_stroke(rect, 9.0, egui::Stroke::new(
+            1.0, ui_theme::BORDER
+        ), egui::StrokeKind::Inside);
+        ui.painter().text(rect.left_top() + egui::vec2(16.0, 15.0),
+            egui::Align2::LEFT_TOP,
+            if self.view_2d { "HEIGHT DATA  •  TOP DOWN" }
+            else { "PERSPECTIVE  •  REALTIME GPU" },
+            egui::FontId::monospace(11.0), ui_theme::TEXT);
+        ui.painter().text(rect.left_bottom() + egui::vec2(16.0, -17.0),
+            egui::Align2::LEFT_BOTTOM,
+            if self.view_2d { "16-bit heightmap available in Export" }
+            else { "Drag to orbit   •   Scroll to zoom" },
+            egui::FontId::proportional(12.0), ui_theme::TEXT);
     }
 }
 
 impl eframe::App for GaiaApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        egui::Panel::top("gaia_toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.small(&self.status);
-                ui.separator();
-                ui.small("Gaia 0.1 | Rust + wgpu");
-            });
-        });
-        egui::Panel::left("inspector").default_size(275.0).resizable(true).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
-        });
-        egui::Panel::bottom("graph")
-            .resizable(true).default_size(270.0).min_size(120.0)
+
+        // Standard shortcuts. Open never modifies the running project on failure.
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+            self.save_project();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) {
+            self.open_project();
+        }
+
+        egui::Panel::top("gaia_toolbar")
+            .frame(ui_theme::toolbar())
+            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .exact_size(34.0)
+            .frame(ui_theme::toolbar())
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong("NODE GRAPH");
-                    ui.label("Click to select • drag to move");
+                    let status_color = if self.status.contains("failed")
+                        || self.status.contains("error") {
+                        ui_theme::RED
+                    } else {
+                        ui_theme::ACCENT
+                    };
+                    ui.colored_label(status_color, "●");
+                    ui.label(egui::RichText::new(&self.status)
+                        .size(12.0).color(ui_theme::MUTED));
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new("GAIA 0.1  ·  WGPU")
+                                .monospace().size(11.0).color(ui_theme::MUTED));
+                        }
+                    );
                 });
-                egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| self.graph_canvas(ui));
             });
-        egui::CentralPanel::default().show(ui, |ui| self.viewport(ui));
+        egui::Panel::left("library")
+            .default_size(200.0).min_size(170.0).max_size(270.0)
+            .resizable(true).frame(ui_theme::panel())
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.library(ui));
+            });
+        egui::Panel::right("inspector")
+            .default_size(295.0).min_size(255.0).max_size(420.0)
+            .resizable(true).frame(ui_theme::panel())
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+            });
+        egui::Panel::bottom("graph")
+            .resizable(true).default_size(270.0).min_size(135.0)
+            .frame(ui_theme::panel())
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("GRAPH").size(12.0)
+                        .strong().color(ui_theme::TEXT));
+                    ui.label(egui::RichText::new(
+                        format!("{} NODES  ·  OUTPUT #{:03}",
+                            self.project.graph.nodes.len(), self.project.graph.output)
+                    ).monospace().size(10.0).color(ui_theme::MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new("Select · drag · edit inputs in Properties")
+                            .size(11.0).color(ui_theme::MUTED));
+                    });
+                });
+                ui.add_space(8.0);
+                egui::ScrollArea::both().auto_shrink([false, false])
+                    .show(ui, |ui| self.graph_canvas(ui));
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(ui_theme::BG).inner_margin(12))
+            .show(ui, |ui| self.viewport(ui));
+
         if self.graph_dirty {
             self.rebuild(&ctx);
         }
@@ -365,6 +588,14 @@ impl eframe::App for GaiaApp {
             }
             self.gpu_dirty = false;
         }
+    }
+}
+
+fn node_accent(kind: &NodeKind) -> egui::Color32 {
+    match kind {
+        NodeKind::Mountain { .. } | NodeKind::Noise { .. } => ui_theme::ACCENT,
+        NodeKind::Erosion { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Blend { .. } => ui_theme::AMBER,
     }
 }
 
@@ -382,7 +613,7 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 600.0]),
+            .with_min_inner_size([1024.0, 680.0]),
         ..Default::default()
     };
     eframe::run_native("Gaia • Terrain Editor", options, Box::new(|cc| Ok(Box::new(GaiaApp::new(cc)))))
