@@ -259,6 +259,13 @@ pub fn thermal_erosion(input: &HeightField, iterations: u32, talus: f32, strengt
 pub fn thermal_erosion_fields(
     input: &HeightField, iterations: u32, talus: f32, strength: f32,
 ) -> ErosionFields {
+    thermal_erosion_fields_checked(input, iterations, talus, strength, || false)
+        .expect("uninterrupted erosion must finish")
+}
+
+pub(crate) fn thermal_erosion_fields_checked<F: Fn() -> bool>(
+    input: &HeightField, iterations: u32, talus: f32, strength: f32, cancelled: F,
+) -> Option<ErosionFields> {
     let mut height = input.clone();
     let size = height.size;
     let mut wear = HeightField::flat(size, 0.0);
@@ -266,8 +273,10 @@ pub fn thermal_erosion_fields(
     let talus = talus.clamp(0.0, 1.0);
     let strength = strength.clamp(0.0, 0.5);
     for _ in 0..iterations {
+        if cancelled() { return None; }
         let mut delta = vec![0.0_f32; height.values.len()];
         for y in 0..size {
+            if y % 16 == 0 && cancelled() { return None; }
             for x in 0..size {
                 let index = y * size + x;
                 let current = height.values[index];
@@ -305,7 +314,7 @@ pub fn thermal_erosion_fields(
             *value += change;
         }
     }
-    ErosionFields { height, wear, deposits }
+    Some(ErosionFields { height, wear, deposits })
 }
 
 pub(crate) fn terrace(input: &HeightField, steps: u32, softness: f32) -> HeightField {
