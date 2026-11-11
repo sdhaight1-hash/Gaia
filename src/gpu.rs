@@ -17,6 +17,16 @@ struct Vertex {
     position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 3],
+    splat: [f32; 4],
+}
+
+// 64 bytes of projection-view matrix followed by eye position (16-byte
+// aligned), used for view-dependent dielectric specular highlights.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct CameraUniform {
+    matrix: [f32; 16],
+    eye: [f32; 4],
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -81,7 +91,9 @@ fn terrain_palette(height: f32, slope: f32) -> [f32; 3] {
 }
 
 /// The selected RGBA map colors the output heightfield at matching grid UVs.
-fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Vec<u32>) {
+fn mesh(field: &HeightField, color_map: Option<&ColorField>,
+    splat_map: Option<&ColorField>,
+) -> (Vec<Vertex>, Vec<u32>) {
     let n = field.size;
     let mut vertices = Vec::with_capacity(n * n);
     let step = 2.0 / (n - 1) as f32;
@@ -89,6 +101,11 @@ fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Ve
     // elevation/slope palette when no valid Color field was selected.
     let color_map = color_map.filter(|map|
         map.size == n && map.pixels.len() == field.values.len()
+    );
+    let splat_map = splat_map.filter(|map|
+        map.size == n && map.pixels.len() == field.values.len()
+            && map.pixels.iter().all(|px| px.iter().all(|v|
+                v.is_finite() && *v >= 0.0) && px.iter().sum::<f32>() > 0.0)
     );
     for y in 0..n {
         for x in 0..n {
@@ -113,6 +130,7 @@ fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Ve
                 position: [-1.0 + x as f32 * step, height, -1.0 + y as f32 * step],
                 normal: normal.to_array(),
                 color,
+                splat: splat_map.map_or([0.0; 4], |map| map.pixels[y * n + x]),
             });
         }
     }
@@ -132,10 +150,10 @@ fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Ve
 fn upload_buffers(
     device: &wgpu::Device,
     field: &HeightField,
-    color_map: Option<&ColorField>,
-    _eye: Vec3,
+    color_map: Option<&ColorField>, splat_map: Option<&ColorField>,
 ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    let (vertices, indices): (Vec<Vertex>, Vec<u32>) = mesh(field, color_map);
+    let (vertices, indices): (Vec<Vertex>, Vec<u32>) =
+        mesh(field, color_map, splat_map);
     let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Gaia terrain vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -149,7 +167,7 @@ fn upload_buffers(
     (vertex_buf, index_buf, indices.len() as u32)
 }
 
-pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: Vec3) {
+pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye: Vec3) {
     let device = &render_state.device;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gaia terrain shader"),
@@ -163,7 +181,7 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: NonZeroU64::new(64),
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64),
             },
             count: None,
         }],
@@ -173,8 +191,8 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
         bind_group_layouts: &[Some(&group_layout)],
         immediate_size: 0,
     });
-    const ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-        0 => Float32x3, 1 => Float32x3, 2 => Float32x3
+    const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x4
     ];
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Gaia terrain pipeline"),
@@ -212,7 +230,9 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
     });
     let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Gaia camera"),
-        contents: bytemuck::cast_slice(&[0.0_f32; 16]),
+        contents: bytemuck::bytes_of(&CameraUniform {
+            matrix: [0.0; 16], eye: [0.0; 4],
+        }),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -280,7 +300,8 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
         mag_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
-    let (vertices, indices, index_count) = upload_buffers(device, field, None, eye);
+    let (vertices, indices, index_count) =
+        upload_buffers(device, field, None, None);
     render_state.renderer.write().callback_resources.insert(TerrainRenderResources {
         pipeline, bind_group, uniform, vertices, indices, index_count,
         composite_pipeline, composite_layout, composite_sampler,
@@ -290,10 +311,10 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
 }
 
 pub fn upload(render_state: &egui_wgpu::RenderState, field: &HeightField,
-    color_map: Option<&ColorField>, eye: Vec3,
+    color_map: Option<&ColorField>, splat_map: Option<&ColorField>,
 ) {
     let (vertices, indices, index_count) =
-        upload_buffers(&render_state.device, field, color_map, eye);
+        upload_buffers(&render_state.device, field, color_map, splat_map);
     if let Some(resources) = render_state.renderer.write()
         .callback_resources.get_mut::<TerrainRenderResources>()
     {
@@ -353,6 +374,7 @@ impl TerrainRenderResources {
 
 pub struct TerrainCallback {
     pub camera: [f32; 16],
+    pub eye: [f32; 4],
     pub pixels: [u32; 2],
 }
 
@@ -366,7 +388,10 @@ impl egui_wgpu::CallbackTrait for TerrainCallback {
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(state) = resources.get_mut::<TerrainRenderResources>() {
-            queue.write_buffer(&state.uniform, 0, bytemuck::cast_slice(&self.camera));
+            queue.write_buffer(&state.uniform, 0, bytemuck::bytes_of(&CameraUniform {
+                matrix: self.camera,
+                eye: self.eye,
+            }));
             state.ensure_target(device, self.pixels);
             if let Some(target) = &state.offscreen {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -448,8 +473,8 @@ mod tests {
     fn terrain_mesh_uses_selected_color_field_without_moving_geometry() {
         let terrain = HeightField::flat(32, 0.4);
         let map = ColorField::flat(32, [0.85, 0.21, 0.04, 0.3]);
-        let (colored, colored_indices) = mesh(&terrain, Some(&map));
-        let (default, default_indices) = mesh(&terrain, None);
+        let (colored, colored_indices) = mesh(&terrain, Some(&map), None);
+        let (default, default_indices) = mesh(&terrain, None, None);
         assert_eq!(colored_indices, default_indices);
         for (a, b) in colored.iter().zip(default.iter()) {
             assert_eq!(a.position, b.position);
@@ -463,15 +488,58 @@ mod tests {
     fn invalid_color_resolution_falls_back_to_base_palette() {
         let terrain = HeightField::flat(32, 0.4);
         let mismatched = ColorField::flat(64, [1.0, 0.0, 0.0, 1.0]);
-        let (colored, _) = mesh(&terrain, Some(&mismatched));
-        let (original, _) = mesh(&terrain, None);
+        let (colored, _) = mesh(&terrain, Some(&mismatched), None);
+        let (original, _) = mesh(&terrain, None, None);
         assert_eq!(colored[0].color, original[0].color);
+    }
+
+    #[test]
+    fn material_splat_changes_only_vertex_weights_not_geometry_or_color() {
+        let terrain = HeightField::flat(32, 0.4);
+        let mut mask = ColorField::flat(32, [0.0, 0.0, 1.0, 0.0]);
+        mask.pixels[0] = [0.15, 0.25, 0.4, 0.2];
+        let (material, material_indices) = mesh(&terrain, None, Some(&mask));
+        let (plain, plain_indices) = mesh(&terrain, None, None);
+        assert_eq!(material_indices, plain_indices);
+        assert_eq!(material[0].splat, [0.15, 0.25, 0.4, 0.2]);
+        for (a, b) in material.iter().zip(&plain) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.normal, b.normal);
+            assert_eq!(a.color, b.color);
+            assert_eq!(b.splat, [0.0; 4]);
+        }
+        assert_eq!(material[100].splat, [0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn material_splat_mismatch_or_invalid_weights_revert_to_plain_preview() {
+        let terrain = HeightField::flat(32, 0.4);
+        for map in [
+            ColorField::flat(64, [1.0, 0.0, 0.0, 0.0]),
+            ColorField::flat(32, [0.0; 4]),
+            ColorField::flat(32, [f32::NAN, 0.0, 0.0, 1.0]),
+        ] {
+            let (vertices, _) = mesh(&terrain, None, Some(&map));
+            assert!(vertices.iter().all(|v| v.splat == [0.0; 4]));
+        }
+    }
+
+    #[test]
+    fn cpu_validates_terrain_pbr_wgsl_without_graphics_adapter() {
+        let module = naga::front::wgsl::parse_str(include_str!("terrain.wgsl"))
+            .expect("WGSL shader should parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        ).validate(&module).expect("WGSL shader must validate");
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 80);
+        assert_eq!(std::mem::size_of::<Vertex>(), 52);
     }
 
     #[test]
     fn terrain_mesh_is_two_triangles_per_cell() {
         let terrain = HeightField::flat(32, 0.4);
-        let (vertices, indices) = mesh(&terrain, None);
+        let (vertices, indices) = mesh(&terrain, None, None);
         assert_eq!(vertices.len(), 32 * 32);
         assert_eq!(indices.len(), 31 * 31 * 6);
     }

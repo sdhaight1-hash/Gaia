@@ -80,6 +80,7 @@ struct GaiaApp {
     project: Project,
     field: HeightField,
     material_color: Option<ColorField>,
+    material_splat: Option<ColorField>,
     worker: GraphWorker,
     texture: Option<egui::TextureHandle>,
     preview_source: PortRef,
@@ -126,6 +127,7 @@ impl GaiaApp {
             project,
             field,
             material_color: None,
+            material_splat: None,
             worker,
             texture,
             preview_source,
@@ -171,7 +173,11 @@ impl GaiaApp {
                     } else {
                         height_image(&result.preview)
                     };
-                    // Packed weights are not a paint color for the 3D mesh.
+                    // RGB Color nodes paint vertices, whereas typed Splat
+                    // nodes select a four-layer dielectric PBR material.
+                    self.material_splat = if result.preview_kind == PortType::Splat {
+                        result.preview_color.clone()
+                    } else { None };
                     self.material_color = if result.preview_kind == PortType::Color {
                         result.preview_color
                     } else { None };
@@ -1413,6 +1419,8 @@ impl GaiaApp {
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
                 rect, gpu::TerrainCallback {
                     camera: matrix,
+                    eye: gpu::eye_position(self.yaw, self.pitch, self.distance)
+                        .extend(1.0).to_array(),
                     pixels: [
                         (rect.width() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
                         (rect.height() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
@@ -1449,7 +1457,9 @@ impl GaiaApp {
                     _ => "Scalar output available as grayscale 16-bit PNG in Export",
                 }
             }
-            else if self.material_color.is_some() {
+            else if self.material_splat.is_some() {
+                "PBR MATERIALS  •  Sand / Soil / Rock / Snow  •  Orbit / Zoom"
+            } else if self.material_color.is_some() {
                 "COLOR MAP ON TERRAIN   •   Drag to orbit   •   Scroll to zoom"
             } else { "Drag to orbit   •   Scroll to zoom" },
             egui::FontId::proportional(12.0), ui_theme::TEXT);
@@ -1566,8 +1576,8 @@ impl eframe::App for GaiaApp {
         self.poll_worker(&ctx);
         if self.gpu_dirty {
             if let Some(render_state) = frame.wgpu_render_state() {
-                gpu::upload(render_state, &self.field, self.material_color.as_ref(),
-                    gpu::eye_position(self.yaw, self.pitch, self.distance));
+                gpu::upload(render_state, &self.field,
+                    self.material_color.as_ref(), self.material_splat.as_ref());
             }
             self.gpu_dirty = false;
         }

@@ -18,6 +18,8 @@ rfd = { version = "0.15.4", default-features = false, features = ["xdg-portal", 
 
 [dev-dependencies]
 pollster = "0.4"
+# Validate the render WGSL in CPU-only CI (no GPU adapter required).
+naga = { version = "27", features = ["wgsl-in"] }
 
 [profile.release]
 lto = "thin"

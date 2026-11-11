@@ -113,6 +113,10 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   prevent new terminal pits. Outputs carved Height, channels Mask and normalized
   wear Mask. This first version does not model rain discharge, water surface,
   sediment mass conservation or art-directable headwater masks.
+- Depth-tested GPU GGX dielectric shading of selected RGBA splat layers in the
+  3D viewport: weighted sand, soil, rock and snow albedo/roughness with
+  view-dependent highlights. Existing RGB Color nodes retain painted colors.
+  This is an untextured PBR preview, not layered texture maps or IBL.
 - Surface Material Masks node gives four mutually normalized coverage fields
   (sand, soil, rock, snow) from elevation and slope. Outputs can drive typed
   Color Mixers or independent PNG16 material-layer exports. The same node
