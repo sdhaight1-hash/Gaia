@@ -417,6 +417,110 @@ mod tests {
         (g, blend)
     }
 
+    fn mask_graph() -> (Graph, Vec<PortRef>) {
+        let mut graph = Project::default().graph;
+        let base = graph.add(NodeKind::Noise {
+            seed: 37, frequency: 7.7, amplitude: 0.8,
+        });
+        let softened = graph.add(NodeKind::Blur { radius: 3 });
+        graph.connect(softened, 0, PortRef::height(base)).unwrap();
+        let raised = graph.add(NodeKind::Mountain {
+            seed: 22, frequency: 5.1, height: 1.0,
+        });
+        let slope = graph.add(NodeKind::Slope);
+        graph.connect(slope, 0, PortRef::height(softened)).unwrap();
+        let curvature = graph.add(NodeKind::Curvature);
+        graph.connect(curvature, 0, PortRef::height(softened)).unwrap();
+        let elevation = graph.add(NodeKind::ElevationMask {
+            low: 0.20, high: 0.66, feather: 0.08,
+        });
+        graph.connect(elevation, 0, PortRef::height(softened)).unwrap();
+        let levels = graph.add(NodeKind::MaskLevels {
+            black: 0.15, white: 0.9, gamma: 1.8, invert: false,
+        });
+        graph.connect(levels, 0, PortRef::new(slope, "slope")).unwrap();
+        let blended = graph.add(NodeKind::MaskedBlend { mix: 0.73 });
+        graph.connect(blended, 0, PortRef::height(softened)).unwrap();
+        graph.connect(blended, 1, PortRef::height(raised)).unwrap();
+        graph.connect(blended, 2, PortRef::new(levels, "mask")).unwrap();
+        (graph, vec![
+            PortRef::new(slope, "slope"),
+            PortRef::new(curvature, "curvature"),
+            PortRef::new(elevation, "mask"),
+            PortRef::new(levels, "mask"),
+            PortRef::height(blended),
+        ])
+    }
+
+    #[test]
+    fn typed_masks_and_masked_blend_match_full_grid_including_all_seams() {
+        let (graph, sources) = mask_graph();
+        for size in [32, 65, 128] {
+            for source in &sources {
+                let full = graph.evaluate_port(size, source).unwrap();
+                for count in [2, 3, 7] {
+                    let layout = RegionLayout::new(size, count).unwrap();
+                    let mut stitched = vec![f32::NAN; size * size];
+                    for ty in 0..count {
+                        for tx in 0..count {
+                            let rect = layout.tile(tx, ty).unwrap();
+                            let (tile, _) = evaluate_region(&graph, size, source, rect).unwrap();
+                            assert_eq!(tile.kind, full.kind, "{source:?}");
+                            for y in 0..rect.height {
+                                for x in 0..rect.width {
+                                    let index = (rect.y + y) * size + rect.x + x;
+                                    let v = tile.values[y * rect.width + x];
+                                    if !stitched[index].is_nan() {
+                                        assert_eq!(stitched[index], v,
+                                            "boundary mismatch {source:?} size={size} tile=({tx},{ty})");
+                                    }
+                                    stitched[index] = v;
+                                }
+                            }
+                        }
+                    }
+                    assert!(stitched.iter().all(|v| v.is_finite()));
+                    for (i, (region_v, full_v)) in stitched.iter().zip(&full.data.values).enumerate() {
+                        assert!((region_v - full_v).abs() <= 1.0e-6,
+                            "{source:?} size={size} tile count={count} sample={i}: region={region_v}, full={full_v}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_region_rejects_wrong_port_and_requires_mask_for_masked_blend() {
+        let (mut graph, sources) = mask_graph();
+        let roi = Region { x: 10, y: 9, width: 15, height: 12 };
+        assert_eq!(evaluate_region(&graph, 65, &sources[0], roi).unwrap().0.kind,
+            PortType::Mask);
+        assert_eq!(evaluate_region(&graph, 65, sources.last().unwrap(), roi).unwrap().0.kind,
+            PortType::Height);
+        assert!(evaluate_region(&graph, 65,
+            &PortRef::new(sources[0].node, "height"), roi).is_err());
+        let blend = sources.last().unwrap().node;
+        // The type checker must fail, not misinterpret mask/height as
+        // interchangeable scalar fields.
+        graph.get_mut(blend).unwrap().inputs[2] = PortRef::height(1);
+        assert!(evaluate_region(&graph, 65, &PortRef::height(blend), roi)
+            .unwrap_err().contains("Type mismatch"));
+    }
+
+    #[test]
+    fn typed_masks_have_small_halo_memory_at_four_k() {
+        let (graph, sources) = mask_graph();
+        let layout = RegionLayout::new(4096, 8).unwrap();
+        for source in [sources[1].clone(), sources[4].clone()] {
+            let (field, stats) = evaluate_region(
+                &graph, 4096, &source, layout.tile(2, 5).unwrap()).unwrap();
+            assert!(field.values.iter().all(|v| v.is_finite()));
+            assert!(stats.peak_working_samples > field.values.len());
+            assert!(stats.peak_working_samples < 4096 * 4096 / 4,
+                "region path should not allocate full-grid intermediates");
+        }
+    }
+
     #[test]
     fn stitched_regions_match_whole_grid_for_nested_halos_and_blends() {
         let (graph, node) = sample_graph();
