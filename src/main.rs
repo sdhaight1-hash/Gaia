@@ -309,7 +309,8 @@ impl GaiaApp {
             NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. }
             | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. }
             | NodeKind::MaskLevels { .. } | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. });
-        self.selected = self.project.graph.add(kind);
+        let source = self.preview_source.clone();
+        self.selected = self.project.graph.add_from(kind, &source);
         self.focus_graph_selection = true;
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
@@ -340,8 +341,9 @@ impl GaiaApp {
     fn library(&mut self, ui: &mut egui::Ui) {
         ui_theme::section(ui, "NODE LIBRARY");
         ui.label(egui::RichText::new("Create").size(21.0).strong().color(ui_theme::TEXT));
-        ui.label(egui::RichText::new("Build your terrain with procedural blocks.")
-            .size(12.0).color(ui_theme::MUTED));
+        ui.label(egui::RichText::new(
+            "Select a graph output first. New compatible nodes connect to it automatically."
+        ).size(12.0).color(ui_theme::MUTED));
         ui.add_space(20.0);
         ui_theme::section(ui, "GENERATORS");
         self.palette_node(ui, "▲  Mountain", "Create a ridged mountain mass",
