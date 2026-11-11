@@ -118,7 +118,7 @@ fn commit_row(
     upper: Option<&[DirectedFlux]>, center: &[DirectedFlux],
     lower: Option<&[DirectedFlux]>, boundary: WorldEdge,
     next_water: &mut File, next_sediment: &mut File, next_flow: &mut File,
-    ledger: &mut MassLedger,
+    evaporation: f32, ledger: &mut MassLedger,
 ) -> Result<(), String> {
     let mut water = Vec::with_capacity(size);
     let mut sediment = Vec::with_capacity(size);
@@ -183,7 +183,13 @@ fn commit_row(
         if !w.is_finite() || !s.is_finite() || w < 0.0 || s < 0.0 {
             return Err("Hydraulic face exchange produced invalid mass".into());
         }
-        water.push(w);
+        let evaporated = w * evaporation;
+        let retained = w - evaporated;
+        if !retained.is_finite() || retained < 0.0 {
+            return Err("Hydraulic evaporation produced invalid water mass".into());
+        }
+        ledger.evaporated += f64::from(evaporated);
+        water.push(retained);
         sediment.push(s);
         flow.push(donor.total_water);
     }
@@ -238,6 +244,19 @@ impl DiskTransport {
         })
     }
 
+    /// Read one immutable pre-tick row with rainfall added in scratch memory.
+    /// The original backing file is untouched until the entire tick commits.
+    fn load_rained_row(&mut self, y: usize, rain: f32) -> Result<FieldRow, String> {
+        let mut row = self.load_row(y)?;
+        for water in &mut row.water {
+            *water += rain;
+            if !water.is_finite() {
+                return Err("Rainfall overflowed water storage".into());
+            }
+        }
+        Ok(row)
+    }
+
     /// Read a single committed row, optionally including the most recent
     /// tick's outgoing-flow diagnostic. No whole-world materialization.
     pub fn transport_row(
@@ -272,16 +291,35 @@ impl DiskTransport {
         &mut self, stripe_rows: usize, boundary: WorldEdge,
         cancelled: impl Fn() -> bool,
     ) -> Result<MassLedger, String> {
+        self.step_weather(stripe_rows, boundary, 0.0, 0.0, cancelled)
+    }
+
+    /// Like step, but rain is a positive external water source applied to
+    /// every uniquely owned world cell before flux evaluation, and evaporation
+    /// is a water-only loss applied after transport. Both enter the f64 ledger.
+    /// Rates follow the current global hydraulic solver's accepted ranges.
+    pub fn step_weather(
+        &mut self, stripe_rows: usize, boundary: WorldEdge,
+        rain: f32, evaporation: f32, cancelled: impl Fn() -> bool,
+    ) -> Result<MassLedger, String> {
         if stripe_rows == 0 || stripe_rows > self.size {
             return Err("Stripe height must be within 1..=world resolution".into());
+        }
+        if !rain.is_finite() || !(0.0..=0.05).contains(&rain) ||
+            !evaporation.is_finite() || !(0.0..=1.0).contains(&evaporation)
+        {
+            return Err("Rain must be 0..=0.05 and evaporation 0..=1".into());
         }
         if cancelled() { return Err("Build cancelled".into()); }
         let mut next_water = scratch_file()?;
         let mut next_sediment = scratch_file()?;
         let mut next_flow = scratch_file()?;
-        let mut ledger = MassLedger::default();
+        let mut ledger = MassLedger {
+            rainfall: f64::from(rain) * (self.size * self.size) as f64,
+            ..MassLedger::default()
+        };
         let mut previous: Option<FieldRow> = None;
-        let mut current = Some(self.load_row(0)?);
+        let mut current = Some(self.load_rained_row(0, rain)?);
         let mut prev_flux: Option<Vec<DirectedFlux>> = None;
         let mut prev_prev_flux: Option<Vec<DirectedFlux>> = None;
 
@@ -290,7 +328,7 @@ impl DiskTransport {
             for y in stripe_start..stripe_end {
                 if cancelled() { return Err("Build cancelled".into()); }
                 let next = if y + 1 < self.size {
-                    Some(self.load_row(y + 1)?)
+                    Some(self.load_rained_row(y + 1, rain)?)
                 } else { None };
                 let donors = flux_row(
                     y, self.size, previous.as_ref(), current.as_ref().unwrap(),
@@ -302,7 +340,8 @@ impl DiskTransport {
                     commit_row(
                         y - 1, self.size, old, prev_prev_flux.as_deref(),
                         center_flux, Some(&donors), boundary,
-                        &mut next_water, &mut next_sediment, &mut next_flow, &mut ledger,
+                        &mut next_water, &mut next_sediment, &mut next_flow,
+                        evaporation, &mut ledger,
                     )?;
                 }
                 previous = current.take();
@@ -315,7 +354,7 @@ impl DiskTransport {
             self.size - 1, self.size, previous.as_ref().unwrap(),
             prev_prev_flux.as_deref(), prev_flux.as_deref().unwrap(),
             None, boundary, &mut next_water, &mut next_sediment,
-            &mut next_flow, &mut ledger,
+            &mut next_flow, evaporation, &mut ledger,
         )?;
         if cancelled() { return Err("Build cancelled".into()); }
         // This is the only commit point. No caller-visible partial iteration.
@@ -459,6 +498,73 @@ mod tests {
     }
 
     #[test]
+    fn weather_tick_matches_reference_and_ledger() {
+        let n = 32;
+        let (h, w, s) = fixture(n);
+        let rain = 0.004f32;
+        let evaporation = 0.03f32;
+        let mut rained = w.clone();
+        for value in &mut rained.values { *value += rain; }
+        let transported = transport_snapshot(
+            &h, &rained, &s,
+            &[Region { x: 0, y: 0, width: n, height: n }],
+            WorldEdge::Open, || false,
+        ).unwrap();
+        let mut state = create(&h, &w, &s);
+        let ledger = state.step_weather(
+            7, WorldEdge::Open, rain, evaporation, || false,
+        ).unwrap();
+        assert_eq!(ledger.rainfall, f64::from(rain) * (n * n) as f64);
+        assert_eq!(ledger.water_outflow, transported.ledger.water_outflow);
+        assert_eq!(ledger.sediment_outflow, transported.ledger.sediment_outflow);
+        let mut evaporated = 0.0f64;
+        for y in 0..n {
+            let (actual_water, actual_sediment, actual_flow) =
+                state.transport_row(y).unwrap();
+            for x in 0..n {
+                let idx = y * n + x;
+                let before_evap = transported.water.values[idx];
+                let loss = before_evap * evaporation;
+                evaporated += f64::from(loss);
+                assert_eq!(actual_water[x], before_evap - loss);
+                assert_eq!(actual_sediment[x], transported.sediment.values[idx]);
+                assert_eq!(actual_flow.as_ref().unwrap()[x], transported.flow.values[idx]);
+            }
+        }
+        assert_eq!(ledger.evaporated, evaporated);
+        let (final_water, final_sediment) = state.mass().unwrap();
+        let water_error = w.mass() + ledger.rainfall - ledger.water_outflow -
+            ledger.evaporated - final_water;
+        let solid_error = s.mass() - ledger.sediment_outflow - final_sediment;
+        assert!(water_error.abs() < 0.0005, "water residual: {water_error}");
+        assert!(solid_error.abs() < 0.0005, "solid residual: {solid_error}");
+    }
+
+    #[test]
+    fn weather_sources_sinks_remain_conservative_across_two_hundred_ticks() {
+        let (h, w, s) = fixture(32);
+        let mut state = create(&h, &w, &s);
+        let (initial_water, initial_sediment) = state.mass().unwrap();
+        let mut accumulated_rain = 0.0;
+        let mut accumulated_evaporation = 0.0;
+        for tick in 0..200 {
+            let stripe = if tick % 2 == 0 { 3 } else { 7 };
+            let ledger = state.step_weather(
+                stripe, WorldEdge::Closed, 0.004, 0.03, || false,
+            ).unwrap();
+            assert_eq!(ledger.water_outflow, 0.0);
+            assert_eq!(ledger.sediment_outflow, 0.0);
+            accumulated_rain += ledger.rainfall;
+            accumulated_evaporation += ledger.evaporated;
+        }
+        let (final_water, final_sediment) = state.mass().unwrap();
+        let water_error = initial_water + accumulated_rain -
+            accumulated_evaporation - final_water;
+        assert!(water_error.abs() < 0.004, "water residual: {water_error}");
+        assert!((initial_sediment - final_sediment).abs() < 0.001);
+    }
+
+    #[test]
     fn validation_rejects_incomplete_or_invalid_rows() {
         assert!(DiskTransport::from_rows(31, |_, _, _, _| Ok(())).is_err());
         assert!(DiskTransport::from_rows(32, |_, h, w, s| {
@@ -471,6 +577,10 @@ mod tests {
         let mut state = create(&h, &w, &s);
         assert!(state.step(0, WorldEdge::Closed, || false).is_err());
         assert!(state.step(33, WorldEdge::Closed, || false).is_err());
+        assert!(state.step_weather(3, WorldEdge::Closed, f32::NAN, 0.1,
+            || false).is_err());
+        assert!(state.step_weather(3, WorldEdge::Closed, 0.01, 1.1,
+            || false).is_err());
         assert!(state.transport_row(32).is_err());
     }
 }

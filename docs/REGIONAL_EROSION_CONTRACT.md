@@ -80,10 +80,12 @@ level; errors and cancellation preserve the prior committed tick. Stripe size
 changes work scheduling, not hydraulic boundary behavior.
 
 This prototype's resident scalar scratch space is O(world width), rather than
-O(world area). This **is not** a full regional hydraulic solver: rain,
-evaporation, erosion/deposition, region graph integration, durable disk caches,
-restart across processes and arbitrary two-dimensional core scheduling are
-absent. Temp-file disk capacity and I/O cost remain unbenchmarked at 4K/8K.
+O(world area). This **is not** a full regional hydraulic solver: erosion/deposition,
+region graph integration, durable disk caches, restart across processes and
+arbitrary two-dimensional core scheduling are absent. The `step_weather`
+extension also supports pre-transport rainfall and post-transport evaporation
+with explicit f64 mass ledgers and long-run tests. Temp-file disk capacity and
+I/O cost remain unbenchmarked at 4K/8K.
 The normal region CLI must keep rejecting global hydraulic operations.
 
 ## Narrow implementation sequence
