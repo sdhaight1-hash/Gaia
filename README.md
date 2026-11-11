@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/adjust-height-operator` (stacked on preceding PRs).
+Development branch: `feat/gui-tiled-export` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -54,6 +54,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   drags coalesce into one undo step; history holds the last 64 edits.
   Save/Open use an editable project path, not file dialogs.
 - Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color maps,
+  or 2×2 / 4×4 overlapping PNG tile grids for the currently selected output
+  directly from the desktop Export menu (also supported by the headless CLI),
   or OBJ terrain meshes. Color is stored as typed RGBA data in the graph,
   not faked by an 8-bit heightfield. All graph parameters and connections
   are serialized to JSON.
