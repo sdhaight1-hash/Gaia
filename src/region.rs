@@ -661,6 +661,152 @@ mod tests {
         }
     }
 
+    fn color_mask_graph() -> (Graph, PortRef, PortRef) {
+        let mut graph = Project::default().graph;
+        let noise = graph.add(NodeKind::Noise {
+            seed: 17, frequency: 6.2, amplitude: 0.9,
+        });
+        let blur = graph.add(NodeKind::Blur { radius: 3 });
+        graph.connect(blur, 0, PortRef::height(noise)).unwrap();
+        let mountain = graph.add(NodeKind::Mountain {
+            seed: 62, frequency: 4.4, height: 1.0,
+        });
+        let aspect = graph.add(NodeKind::Aspect {
+            azimuth: 310.0, half_width: 80.0, min_slope: 0.12,
+        });
+        graph.connect(aspect, 0, PortRef::height(blur)).unwrap();
+        let levels = graph.add(NodeKind::MaskLevels {
+            black: 0.1, white: 0.92, gamma: 1.35, invert: false,
+        });
+        graph.connect(levels, 0, PortRef::new(aspect, "aspect")).unwrap();
+        let cool = graph.add(NodeKind::Colorize {
+            low: [0.1, 0.3, 0.4], high: [0.75, 0.95, 0.8],
+            midpoint: 0.45, contrast: 1.6,
+        });
+        graph.connect(cool, 0, PortRef::height(blur)).unwrap();
+        let warm = graph.add(NodeKind::Colorize {
+            low: [0.6, 0.2, 0.1], high: [1.0, 0.9, 0.38],
+            midpoint: 0.55, contrast: 1.15,
+        });
+        graph.connect(warm, 0, PortRef::height(mountain)).unwrap();
+        let mixed = graph.add(NodeKind::ColorMixer { mix: 0.82 });
+        graph.connect(mixed, 0, PortRef::new(cool, "color")).unwrap();
+        graph.connect(mixed, 1, PortRef::new(warm, "color")).unwrap();
+        graph.connect(mixed, 2, PortRef::new(levels, "mask")).unwrap();
+        (graph, PortRef::new(aspect, "aspect"), PortRef::new(mixed, "color"))
+    }
+
+    #[test]
+    fn aspect_and_rgb_colors_match_full_fields_at_irregular_boundaries() {
+        let (graph, aspect, color) = color_mask_graph();
+        for size in [32, 65, 128] {
+            for count in [2, 3, 7] {
+                let layout = RegionLayout::new(size, count).unwrap();
+                let complete_mask = graph.evaluate_port(size, &aspect).unwrap().data;
+                let complete_color = graph.evaluate_port(size, &color).unwrap()
+                    .color.expect("full-grid color output");
+                let mut stitched_mask = vec![None; size * size];
+                let mut stitched_color = vec![None; size * size];
+                for ty in 0..count {
+                    for tx in 0..count {
+                        let rect = layout.tile(tx, ty).unwrap();
+                        let (mask, _) = evaluate_region(&graph, size, &aspect, rect).unwrap();
+                        let (rgb, _) = evaluate_color_region(&graph, size, &color, rect).unwrap();
+                        assert_eq!(mask.kind, PortType::Mask);
+                        for y in 0..rect.height {
+                            for x in 0..rect.width {
+                                let idx = (rect.y+y)*size+rect.x+x;
+                                let ix = y*rect.width+x;
+                                if let Some(v) = stitched_mask[idx] {
+                                    assert_eq!(v, mask.values[ix], "mask seam {size}/{count}");
+                                }
+                                if let Some(v) = stitched_color[idx] {
+                                    assert_eq!(v, rgb.pixels[ix], "RGB seam {size}/{count}");
+                                }
+                                stitched_mask[idx] = Some(mask.values[ix]);
+                                stitched_color[idx] = Some(rgb.pixels[ix]);
+                            }
+                        }
+                    }
+                }
+                for i in 0..size*size {
+                    let a = stitched_mask[i].unwrap();
+                    let b = complete_mask.values[i];
+                    assert!((a-b).abs() <= 1e-6,
+                        "aspect reference sample {i}: {a} / {b}");
+                    let rgba = stitched_color[i].unwrap();
+                    for channel in 0..4 {
+                        assert!((rgba[channel]-complete_color.pixels[i][channel]).abs() <= 1e-6,
+                            "color reference sample {i} channel {channel}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn color_region_is_bounded_and_scalar_api_rejects_color_ports() {
+        let (graph, aspect, color) = color_mask_graph();
+        let rect = RegionLayout::new(4096, 8).unwrap().tile(3, 2).unwrap();
+        let (rgba, stats) = evaluate_color_region(&graph, 4096, &color, rect).unwrap();
+        assert_eq!(rgba.pixels.len(), rect.width * rect.height);
+        assert!(stats.peak_working_samples >= rgba.pixels.len()*4);
+        assert!(stats.peak_working_samples < 4096*4096/4);
+        assert!(evaluate_region(&graph, 65, &color, Region {
+            x: 0, y: 0, width: 16, height: 16,
+        }).unwrap_err().contains("evaluate_color_region"));
+        assert!(evaluate_color_region(&graph, 65, &aspect, Region {
+            x: 0, y: 0, width: 16, height: 16,
+        }).is_err());
+        assert!(evaluate_color_region_cancellable(&graph, 65, &color, Region {
+            x: 0, y: 0, width: 16, height: 16,
+        }, || true).unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn region_rgb_png8_matches_reference_and_preserves_border_dimensions() {
+        let (graph, _, color) = color_mask_graph();
+        let layout = RegionLayout::new(65, 3).unwrap();
+        let rect = layout.tile(2, 1).unwrap();
+        let (tile, _) = evaluate_color_region(&graph, 65, &color, rect).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rgb.png");
+        tile.export_rgb8(&path).unwrap();
+        let mut reader = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(path).unwrap())).read_info().unwrap();
+        let mut bytes = vec![0_u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut bytes).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        assert_eq!(info.width as usize, rect.width);
+        assert_eq!(info.height as usize, rect.height);
+        let full = graph.evaluate_port(65, &color).unwrap().color.unwrap();
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                let expected = full.pixels[(rect.y+y)*65+rect.x+x];
+                for channel in 0..3 {
+                    let at = (y*rect.width+x)*3+channel;
+                    assert_eq!(bytes[at],
+                        (expected[channel].clamp(0.0,1.0)*255.0).round() as u8);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_aspect_parameters_keep_full_grid_zero_mask_behavior() {
+        let (mut graph, aspect, _) = color_mask_graph();
+        let node = graph.get_mut(aspect.node).unwrap();
+        node.kind = NodeKind::Aspect {
+            azimuth: f32::NAN, half_width: 0.0, min_slope: 3.0,
+        };
+        let roi = RegionLayout::new(65, 3).unwrap().tile(1, 1).unwrap();
+        let (region, _) = evaluate_region(&graph, 65, &aspect, roi).unwrap();
+        assert!(region.values.iter().all(|&x| x == 0.0));
+        assert!(graph.evaluate_port(65, &aspect).unwrap().data.values
+            .iter().all(|&x| x == 0.0));
+    }
+
     #[test]
     fn stitched_regions_match_whole_grid_for_nested_halos_and_blends() {
         let (graph, node) = sample_graph();
