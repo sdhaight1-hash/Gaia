@@ -88,6 +88,23 @@ Hydraulic-containing graphs eligible for the ordinary `--region-tiles` mode,
 does not create meshes or EXR files, and has not yet passed 4K/8K performance
 acceptance on the target GPU/desktop.
 
+## Reproducible hydraulic memory / numerical benchmark
+
+The Windows benchmark script exercises the **actual** `gaia-build`
+hydraulic region export rather than a synthetic transport-only function:
+
+```powershell
+./scripts/benchmark-hydraulic.ps1 -Resolution 256 -Tiles 2 -Repeats 2
+```
+
+It records release-process peak working set (CPU RSS), elapsed wall time,
+f64 water/solid mass residuals and SHA-256 of **all six output channels**.
+The fixture is `tests/fixtures/hydraulic-benchmark.gaia.json`; runs use
+new output folders and fail on missing outputs, mass ledger errors or changed
+PNG hashes. GitHub Windows CI runs a 128² smoke gate with the release binary.
+The same benchmark supports 4K/8K, but those runs and a representative
+16GB Windows desktop performance sign-off are **not** completed by CI.
+
 ## Current workflow
 
 - Left **Node Library**: search by node name or description; add Mountain,
