@@ -2,6 +2,8 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
+use crate::import::read_heightmap;
+use std::path::Path;
 use crate::geology::{mountain_range, crater, dunes, canyon, warp, curvature, elevation_mask};
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
@@ -225,6 +227,13 @@ impl GraphCache {
             // NodeKind is serializable, stable within a running process; no
             // JSON is persisted as a cache key and no unstable layout is hashed.
             serde_json::to_string(&node.kind).map_err(|e| e.to_string())?.hash(&mut hasher);
+            // Imported files are external dependencies: their content must
+            // participate in cache identity, not only the path and parameters.
+            if let NodeKind::ImportHeight { path, .. } = &node.kind {
+                let bytes = std::fs::read(path)
+                    .map_err(|e| format!("Cannot read imported heightmap {path}: {e}"))?;
+                bytes.hash(&mut hasher);
+            }
             for (source, key) in node.inputs.iter().zip(&source_keys) {
                 source.hash(&mut hasher);
                 key.hash(&mut hasher);
@@ -292,7 +301,7 @@ impl NodeKind {
 
     pub fn input_type(&self, slot: usize) -> Option<PortType> {
         match (self, slot) {
-            (Self::Mountain { .. } | Self::Noise { .. } |
+            (Self::Mountain { .. } | Self::Noise { .. } | Self::ImportHeight { .. } |
              Self::Range { .. } | Self::Crater { .. } |
              Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
@@ -320,6 +329,8 @@ fn evaluate_kind(
         NodeKind::Mountain { seed, frequency, height } =>
             NodeOutputs::default().with("height", PortType::Height,
                 generate_mountain(size, *seed, *frequency, *height)),
+        NodeKind::ImportHeight { path, scale } => NodeOutputs::default()
+            .with("height", PortType::Height, read_heightmap(Path::new(path), size, *scale)?),
         NodeKind::Noise { seed, frequency, amplitude } =>
             NodeOutputs::default().with("height", PortType::Height,
                 generate_noise(size, *seed, *frequency, *amplitude)),
@@ -418,6 +429,33 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn imported_asset_content_invalidates_graph_cache() {
+        use crate::terrain::export_png16;
+        let path = std::env::temp_dir().join(format!(
+            "gaia-import-cache-{}.png", std::process::id()
+        ));
+        let p = Project::default();
+        let mut graph = p.graph.clone();
+        let id = graph.add(NodeKind::ImportHeight {
+            path: path.display().to_string(),
+            scale: 1.0,
+        });
+        let mut cache = GraphCache::default();
+        let first = HeightField::flat(32, 0.1);
+        export_png16(&first, &path).unwrap();
+        let a = graph.evaluate_cached(32, &PortRef::height(id), &mut cache).unwrap();
+        assert_eq!(cache.stats.computed, 1);
+        let b = graph.evaluate_cached(32, &PortRef::height(id), &mut cache).unwrap();
+        assert_eq!(cache.stats.computed, 0);
+        assert_eq!(a.data, b.data);
+        export_png16(&HeightField::flat(32, 0.7), &path).unwrap();
+        let c = graph.evaluate_cached(32, &PortRef::height(id), &mut cache).unwrap();
+        assert_eq!(cache.stats.computed, 1);
+        assert_ne!(a.data.values, c.data.values);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn accepts_legacy_json_references() {
