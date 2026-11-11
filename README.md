@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/headless-2k-builds` (stacked on preceding PRs).
+Development branch: `feat/multi-output-batch-build` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -116,12 +116,18 @@ cargo run --release --bin gaia-build -- --demo --output builds/sample --resoluti
 cargo run --release --bin gaia-build -- --demo --output builds/sample-2k --resolution 2048 --no-obj
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/final
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/erosion-wear --port 2:wear --no-obj
+cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/all-erosion --all-outputs 2 --tiles 2
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/tiles --tiles 4 --no-obj
 ```
 
 Scalar builds write normalized 16-bit grayscale PNG; Color builds write
-RGB8 PNG (alpha intentionally omitted). Every build writes a JSON report
+RGB8 PNG (alpha intentionally omitted). Every single-port build writes a JSON report
 of dimensions, scalar/luminance min/max/mean, selected port and export format.
+The `--all-outputs NODE` command exports all named ports of a graph node
+from one shared CPU graph cache, writing independent typed PNG16/RGB8 maps,
+optional OBJ height meshes, optional tiled grids and a `STEM.batch.report.json`
+manifest with per-output metadata and computed/reused node counts.
+Do not combine `--all-outputs` with `--port`.
 Height outputs also write OBJ unless `--no-obj` is set. The current supported resolutions
 are 32–2048 for the headless builder (desktop 3D preview stays at 64–512).
 A 2K graph build still evaluates every terrain node at full-grid resolution,
