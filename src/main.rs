@@ -3,7 +3,7 @@ mod ui_theme;
 mod history;
 
 use eframe::egui;
-use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
+use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Node, Project};
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
@@ -31,6 +31,20 @@ fn classify_drop(path: &Path) -> DroppedDocument {
     }
 }
 
+/// The scroll content must encompass every node, not just the first few rows.
+/// The old fixed 360px canvas stranded nodes below row 2 outside its layout.
+fn graph_canvas_extent(nodes: &[Node], viewport_width: f32) -> egui::Vec2 {
+    let mut width = viewport_width.max(920.0);
+    let mut height = 360.0_f32;
+    for node in nodes {
+        let ports = node.inputs.len().max(node.kind.output_ports().len()).max(1);
+        let node_height = 74.0_f32.max(47.0 + ports as f32 * 17.0);
+        width = width.max(node.position[0] + 194.0 + 80.0);
+        height = height.max(node.position[1] + node_height + 80.0);
+    }
+    egui::vec2(width, height)
+}
+
 struct GaiaApp {
     project: Project,
     field: HeightField,
@@ -51,6 +65,7 @@ struct GaiaApp {
     unsaved: bool,
     history: EditHistory,
     skip_history_record: bool,
+    focus_graph_selection: bool,
 }
 
 impl GaiaApp {
@@ -94,6 +109,7 @@ impl GaiaApp {
             unsaved: false,
             history: EditHistory::default(),
             skip_history_record: false,
+            focus_graph_selection: false,
         }
     }
 
@@ -187,6 +203,7 @@ impl GaiaApp {
                 self.selected = project.graph.output;
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
+                self.focus_graph_selection = true;
                 self.history.clear();
                 self.skip_history_record = true;
                 self.graph_dirty = true;
@@ -272,6 +289,7 @@ impl GaiaApp {
             | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. }
             | NodeKind::MaskLevels { .. } | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. });
         self.selected = self.project.graph.add(kind);
+        self.focus_graph_selection = true;
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
                 self.preview_source = PortRef::new(self.selected, *name);
@@ -682,7 +700,7 @@ impl GaiaApp {
         const WIDTH: f32 = 194.0;
         const HEIGHT: f32 = 74.0;
         const STEP: f32 = 17.0;
-        let extent = egui::vec2(ui.available_width().max(920.0), 360.0);
+        let extent = graph_canvas_extent(&self.project.graph.nodes, ui.available_width());
         let (rect, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 8.0, ui_theme::CANVAS);
@@ -736,6 +754,7 @@ impl GaiaApp {
             }
         }
         let mut requested_wire = None;
+        let mut requested_preview = None;
         let released = ui.input(|i| i.pointer.any_released());
         for node in &mut self.project.graph.nodes {
             let top_left = rect.left_top() + egui::vec2(node.position[0], node.position[1]);
@@ -748,6 +767,9 @@ impl GaiaApp {
             ).on_hover_text("Click to inspect · drag to move");
             if response.clicked() {
                 self.selected = node.id;
+                if let Some((port, _)) = node.kind.output_ports().first() {
+                    requested_preview = Some(PortRef::new(node.id, *port));
+                }
             }
             if response.dragged() {
                 // drag_motion is the per-frame delta; drag_delta would compound.
@@ -846,6 +868,26 @@ impl GaiaApp {
                     }
                 }
             }
+        }
+        // Selecting a graph card should inspect its actual output. Otherwise
+        // the inspector changes while the preview remains on an unrelated node.
+        if let Some(preview) = requested_preview {
+            if self.preview_source != preview {
+                self.preview_source = preview;
+                self.graph_dirty = true;
+            }
+        }
+        if self.focus_graph_selection {
+            if let Some(node) = self.project.graph.get(self.selected) {
+                let ports = node.inputs.len().max(node.kind.output_ports().len()).max(1);
+                let node_height = 74.0_f32.max(47.0 + ports as f32 * 17.0);
+                let card = egui::Rect::from_min_size(
+                    rect.left_top() + egui::vec2(node.position[0], node.position[1]),
+                    egui::vec2(194.0, node_height),
+                );
+                ui.scroll_to_rect(card, Some(egui::Align::Center));
+            }
+            self.focus_graph_selection = false;
         }
         if released {
             self.wire_start = None;
@@ -965,7 +1007,16 @@ impl GaiaApp {
             egui::FontId::monospace(11.0), ui_theme::TEXT);
         ui.painter().text(rect.left_bottom() + egui::vec2(16.0, -17.0),
             egui::Align2::LEFT_BOTTOM,
-            if self.view_2d { "Selected map available as 16-bit PNG in Export" }
+            if self.view_2d {
+                if self.project.graph.get(self.preview_source.node).is_some_and(|node| {
+                    node.kind.output_ports().iter()
+                        .any(|(port, ty)| *port == self.preview_source.port && *ty == PortType::Color)
+                }) {
+                    "Color output available as RGB8 PNG in Export"
+                } else {
+                    "Scalar output available as grayscale 16-bit PNG in Export"
+                }
+            }
             else if self.material_color.is_some() {
                 "COLOR MAP ON TERRAIN   •   Drag to orbit   •   Scroll to zoom"
             } else { "Drag to orbit   •   Scroll to zoom" },
@@ -1051,6 +1102,11 @@ impl eframe::App for GaiaApp {
                             self.project.graph.nodes.len(), self.project.graph.output)
                     ).monospace().size(10.0).color(ui_theme::MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Find selected").on_hover_text(
+                            "Scroll to the selected graph node"
+                        ).clicked() {
+                            self.focus_graph_selection = true;
+                        }
                         ui.label(egui::RichText::new("Select · drag · connect ports")
                             .size(11.0).color(ui_theme::MUTED));
                     });
@@ -1136,5 +1192,23 @@ mod file_drop_tests {
         assert_eq!(classify_drop(Path::new("WORLD.GAIA.JSON")), DroppedDocument::Project);
         assert_eq!(classify_drop(Path::new("world.json")), DroppedDocument::Unsupported);
         assert_eq!(classify_drop(Path::new("photo.jpeg")), DroppedDocument::Unsupported);
+    }
+
+    #[test]
+    fn graph_canvas_extends_to_last_node_and_dragged_positions() {
+        let mut project = Project::default();
+        for index in 0..30 {
+            project.graph.add(NodeKind::Noise {
+                seed: index, frequency: 3.0, amplitude: 0.2
+            });
+        }
+        let last = project.graph.nodes.last().unwrap();
+        let extent = graph_canvas_extent(&project.graph.nodes, 800.0);
+        assert!(extent.y >= last.position[1] + 74.0 + 80.0);
+        assert!(extent.y > 1000.0, "large graph must scroll vertically");
+        project.graph.nodes[0].position = [2500.0, 1800.0];
+        let extent = graph_canvas_extent(&project.graph.nodes, 800.0);
+        assert!(extent.x >= 2500.0 + 194.0 + 80.0);
+        assert!(extent.y >= 1800.0 + 74.0 + 80.0);
     }
 }
