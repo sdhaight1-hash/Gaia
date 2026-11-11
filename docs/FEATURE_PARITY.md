@@ -16,7 +16,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Terrain generators | Mountain, Island, independently implemented Volcano, Noise, Range, Crater, Dunes, Canyon | Uplift/tectonics, more complex rock layers, diverse geological structures and art-directed Gaea-level generator fidelity |
 | Terrain modifiers | Independently implemented Adjust (multiply, shaper, clamp, autolevel, invert), Terrace, Stratify (tilted/warped rock layering), Blur, Warp, Blend and Masked Blend | Equalize/histogram, advanced fractures, exposed rock structures, displacement, paintable curves and more blend modes |
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
-| Hydrology | Water depth, suspended sediment, cumulative simulation flow plus D8 downhill contributing area and channel masks | Depression filling, connected river/lake/sea geometry, watershed hierarchy, coastlines, stable high-resolution systems |
+| Hydrology | Priority-flood pit conditioning with outlet-connected graded terrain and a typed fill-depth field; water depth, suspended sediment, cumulative simulated flow plus D8 downhill contributing area/channel masks | Physical lake volumes and shore surfaces, watershed hierarchy, carved connected rivers, sea behavior, stable high-resolution systems |
 | Masks | Slope, Curvature, compass-facing Aspect, drainage Accumulation/Channels, Elevation, Wear, Deposits, Flow, typed Mask Levels/invert | Feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
 | Color/materials | RGBA Color fields, editable altitude palettes, typed Color Mixer, independently derived RGB normal maps with strength and green-axis flip, 2D/3D vertex-color preview, RGB8 export | PBR material model, multilayer textures, splat maps, detail/LOD normal maps and tangent-space mesh integration |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
@@ -46,7 +46,7 @@ Real GPU numerical results remain required.
    on a real Windows GPU; native file dialogs remain incomplete.
 2. Add terrain import and output units/scales, batch builds, diagnostic
    overlays and a reproducible benchmark suite.
-3. Extend D8 drainage through depression treatment, river tracing and lakes;
+3. Extend priority-flood-conditioned D8 drainage through connected river tracing, basin labels and physically modeled lakes;
    test water/solid ledgers over long runs and validate tile seams.
 4. Evolve the colorized 3D preview into proper layered PBR materials, then
    environment-aware surface and ecosystem models.
