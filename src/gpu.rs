@@ -182,7 +182,9 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye:
         label: Some("Gaia camera layout"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
+            // Both stages read this uniform: matrix in vertex; eye and
+            // layer palette in the fragment GGX lighting pass.
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
