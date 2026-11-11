@@ -1,6 +1,7 @@
 //! True depth-tested wgpu preview, rendered offscreen and composited into egui.
 //! Camera movement is uniform-only: do not rebuild or sort the mesh on orbit.
 use gaia::terrain::HeightField;
+use gaia::color::ColorField;
 use bytemuck::{Pod, Zeroable};
 use eframe::{
     egui,
@@ -58,10 +59,16 @@ pub fn view_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> [f32; 16
     (proj * view).to_cols_array()
 }
 
-fn mesh(field: &HeightField) -> (Vec<Vertex>, Vec<u32>) {
+/// The selected RGBA map colors the output heightfield at matching grid UVs.
+fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Vec<u32>) {
     let n = field.size;
     let mut vertices = Vec::with_capacity(n * n);
     let step = 2.0 / (n - 1) as f32;
+    // Do not index mismatched asset dimensions. Use the established
+    // elevation/slope palette when no valid Color field was selected.
+    let color_map = color_map.filter(|map|
+        map.size == n && map.pixels.len() == field.values.len()
+    );
     for y in 0..n {
         for x in 0..n {
             let height = field.get(x, y).clamp(0.0, 2.0);
@@ -71,7 +78,14 @@ fn mesh(field: &HeightField) -> (Vec<Vertex>, Vec<u32>) {
             let down = field.get(x, (y + 1).min(n - 1));
             let normal = Vec3::new(left - right, step * 2.0, up - down).normalize_or_zero();
             let slope = 1.0 - normal.y;
-            let color = if height < 0.07 {
+            let color = if let Some(map) = color_map {
+                let rgba = map.pixels[y * n + x];
+                // Terrain is opaque; alpha remains in the graph Color field
+                // for future compositing rather than changing this pass.
+                [rgba[0].clamp(0.0, 1.0),
+                 rgba[1].clamp(0.0, 1.0),
+                 rgba[2].clamp(0.0, 1.0)]
+            } else if height < 0.07 {
                 [0.21, 0.31, 0.30]
             } else if height < 0.28 {
                 [0.37, 0.45, 0.29]
@@ -105,9 +119,10 @@ fn mesh(field: &HeightField) -> (Vec<Vertex>, Vec<u32>) {
 fn upload_buffers(
     device: &wgpu::Device,
     field: &HeightField,
+    color_map: Option<&ColorField>,
     _eye: Vec3,
 ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    let (vertices, indices): (Vec<Vertex>, Vec<u32>) = mesh(field);
+    let (vertices, indices): (Vec<Vertex>, Vec<u32>) = mesh(field, color_map);
     let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Gaia terrain vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -252,7 +267,7 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
         mag_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
-    let (vertices, indices, index_count) = upload_buffers(device, field, eye);
+    let (vertices, indices, index_count) = upload_buffers(device, field, None, eye);
     render_state.renderer.write().callback_resources.insert(TerrainRenderResources {
         pipeline, bind_group, uniform, vertices, indices, index_count,
         composite_pipeline, composite_layout, composite_sampler,
@@ -261,8 +276,11 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: 
     });
 }
 
-pub fn upload(render_state: &egui_wgpu::RenderState, field: &HeightField, eye: Vec3) {
-    let (vertices, indices, index_count) = upload_buffers(&render_state.device, field, eye);
+pub fn upload(render_state: &egui_wgpu::RenderState, field: &HeightField,
+    color_map: Option<&ColorField>, eye: Vec3,
+) {
+    let (vertices, indices, index_count) =
+        upload_buffers(&render_state.device, field, color_map, eye);
     if let Some(resources) = render_state.renderer.write()
         .callback_resources.get_mut::<TerrainRenderResources>()
     {
@@ -394,9 +412,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terrain_mesh_uses_selected_color_field_without_moving_geometry() {
+        let terrain = HeightField::flat(32, 0.4);
+        let map = ColorField::flat(32, [0.85, 0.21, 0.04, 0.3]);
+        let (colored, colored_indices) = mesh(&terrain, Some(&map));
+        let (default, default_indices) = mesh(&terrain, None);
+        assert_eq!(colored_indices, default_indices);
+        for (a, b) in colored.iter().zip(default.iter()) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.normal, b.normal);
+            assert_eq!(a.color, [0.85, 0.21, 0.04]);
+        }
+        assert_ne!(colored[0].color, default[0].color);
+    }
+
+    #[test]
+    fn invalid_color_resolution_falls_back_to_base_palette() {
+        let terrain = HeightField::flat(32, 0.4);
+        let mismatched = ColorField::flat(64, [1.0, 0.0, 0.0, 1.0]);
+        let (colored, _) = mesh(&terrain, Some(&mismatched));
+        let (original, _) = mesh(&terrain, None);
+        assert_eq!(colored[0].color, original[0].color);
+    }
+
+    #[test]
     fn terrain_mesh_is_two_triangles_per_cell() {
         let terrain = HeightField::flat(32, 0.4);
-        let (vertices, indices) = mesh(&terrain);
+        let (vertices, indices) = mesh(&terrain, None);
         assert_eq!(vertices.len(), 32 * 32);
         assert_eq!(indices.len(), 31 * 31 * 6);
     }
