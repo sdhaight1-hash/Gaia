@@ -28,6 +28,8 @@ impl HeightField {
 pub enum NodeKind {
     Mountain { seed: u32, frequency: f32, height: f32 },
     Island { seed: u32, radius: f32, height: f32, roughness: f32 },
+    Volcano { seed: u32, radius: f32, height: f32, mouth: f32, bulk: f32,
+        roughness: f32, center_x: f32, center_y: f32 },
     ImportHeight { path: String, scale: f32 },
     Colorize { low: [f32; 3], high: [f32; 3], midpoint: f32, contrast: f32 },
     ColorMixer { mix: f32 },
@@ -57,6 +59,7 @@ impl NodeKind {
         match self {
             Self::Mountain { .. } => "Mountain",
             Self::Island { .. } => "Island",
+            Self::Volcano { .. } => "Volcano",
             Self::ImportHeight { .. } => "Import heightmap",
             Self::Colorize { .. } => "Colorize",
             Self::ColorMixer { .. } => "Color mixer",
@@ -84,7 +87,7 @@ impl NodeKind {
 
     pub fn input_count(&self) -> usize {
         match self {
-            Self::Mountain { .. } | Self::Island { .. } |
+            Self::Mountain { .. } | Self::Island { .. } | Self::Volcano { .. } |
                 Self::Noise { .. } | Self::ImportHeight { .. } |
                 Self::Range { .. } | Self::Crater { .. } |
                 Self::Dunes { .. } | Self::Canyon { .. } => 0,
