@@ -231,10 +231,7 @@ impl GaiaApp {
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         for dropped in ctx.input(|input| input.raw.dropped_files.clone()) {
-            let Some(path) = dropped.path else {
-                self.status = "Dropped file has no local path".to_owned();
-                continue;
-            };
+            let path = dropped.path().to_path_buf();
             match classify_drop(&path) {
                 DroppedDocument::Project => {
                     self.filename = path.to_string_lossy().into_owned();
