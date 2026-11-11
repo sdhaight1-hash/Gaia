@@ -1,4 +1,4 @@
-//! Region-aware Height evaluator for strictly local graph operations.
+//! Region-aware typed Height/Mask evaluator for strictly local graph operations.
 //!
 //! A request contains exact integer world-grid coordinates, not a resampled
 //! texture tile. Blur asks its parent for a bounded halo in those coordinates;
@@ -76,6 +76,7 @@ impl RegionLayout {
 #[derive(Clone, Debug)]
 pub struct RegionField {
     pub region: Region,
+    pub kind: PortType,
     pub values: Vec<f32>,
 }
 
@@ -120,27 +121,38 @@ impl RegionStats {
     }
 }
 
-fn required_inputs(graph: &Graph, id: u64, seen: &mut std::collections::HashSet<u64>)
-    -> Result<(), String>
-{
-    if !seen.insert(id) { return Ok(()); }
-    let node = graph.get(id).ok_or_else(|| format!("Missing node #{id}"))?;
-    match &node.kind {
-        NodeKind::Noise { .. } | NodeKind::Mountain { .. } |
-        NodeKind::Blend { .. } | NodeKind::Blur { .. } => {}
-        NodeKind::Adjust { autolevel: false, .. } => {}
-        NodeKind::Adjust { autolevel: true, .. } =>
-            return Err("Region mode cannot use Adjust autolevel (global min/max)".into()),
-        other => return Err(format!(
-            "Region mode does not support '{}' (global/untiled operation); use full-grid builds",
-            other.label())),
+/// Accepted named outputs. All other graph features remain explicitly
+/// unsupported in region mode until numerical parity is verified.
+fn supported_port(kind: &NodeKind, name: &str) -> Option<PortType> {
+    match (kind, name) {
+        (NodeKind::Noise { .. } | NodeKind::Mountain { .. } |
+         NodeKind::Adjust { autolevel: false, .. } |
+         NodeKind::Blend { .. } | NodeKind::Blur { .. } |
+         NodeKind::MaskedBlend { .. }, "height") => Some(PortType::Height),
+        (NodeKind::Slope, "slope") |
+        (NodeKind::Curvature, "curvature") |
+        (NodeKind::ElevationMask { .. }, "mask") |
+        (NodeKind::MaskLevels { .. }, "mask") => Some(PortType::Mask),
+        _ => None,
+    }
+}
+
+fn required_inputs(graph: &Graph, source: &PortRef,
+    seen: &mut std::collections::HashSet<u64>,
+) -> Result<(), String> {
+    if !seen.insert(source.node) { return Ok(()); }
+    let node = graph.get(source.node).ok_or_else(||
+        format!("Missing node #{}", source.node))?;
+    if matches!(node.kind, NodeKind::Adjust { autolevel: true, .. }) {
+        return Err("Region mode cannot use Adjust autolevel (global min/max)".into());
+    }
+    if supported_port(&node.kind, &source.port).is_none() {
+        return Err(format!(
+            "Region mode does not support output #{}:{} of '{}' (global/untiled operation or invalid port); use full-grid builds",
+            source.node, source.port, node.kind.label()));
     }
     for input in &node.inputs {
-        if input.port != "height" {
-            return Err(format!("Region mode currently requires Height inputs: #{}:{}",
-                input.node, input.port));
-        }
-        required_inputs(graph, input.node, seen)?;
+        required_inputs(graph, input, seen)?;
     }
     Ok(())
 }
@@ -149,13 +161,7 @@ fn required_inputs(graph: &Graph, id: u64, seen: &mut std::collections::HashSet<
 /// regionally; this is intentional, never an implicit memory-heavy fallback.
 pub fn validate_region_graph(graph: &Graph, source: &PortRef) -> Result<(), String> {
     graph.validate_structure()?;
-    if source.port != "height" ||
-        !graph.get(source.node).is_some_and(|n| n.kind.output_ports().iter()
-            .any(|(name, ty)| *name == "height" && *ty == PortType::Height))
-    {
-        return Err("Region mode currently supports only named Height outputs".into());
-    }
-    required_inputs(graph, source.node, &mut std::collections::HashSet::new())
+    required_inputs(graph, source, &mut std::collections::HashSet::new())
 }
 
 pub fn evaluate_region(graph: &Graph, resolution: usize, source: &PortRef,
@@ -170,16 +176,30 @@ pub fn evaluate_region_cancellable(graph: &Graph, resolution: usize,
     rect.validate(resolution)?;
     validate_region_graph(graph, source)?;
     let mut stats = RegionStats::default();
-    let field = evaluate(graph, resolution, source.node, rect, 0, &mut stats, &cancelled)?;
+    let field = evaluate(graph, resolution, source, rect, 0, &mut stats, &cancelled)?;
     Ok((field, stats))
 }
 
-fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
+fn halo_rect(rect: Region, size: usize, radius: usize) -> Region {
+    let x = rect.x.saturating_sub(radius);
+    let y = rect.y.saturating_sub(radius);
+    Region {
+        x, y,
+        width: (rect.x + rect.width + radius).min(size) - x,
+        height: (rect.y + rect.height + radius).min(size) - y,
+    }
+}
+
+fn evaluate(graph: &Graph, size: usize, source: &PortRef, rect: Region,
     retained: usize, stats: &mut RegionStats,
     cancelled: &impl Fn() -> bool,
 ) -> Result<RegionField, String> {
     if cancelled() { return Err("Build cancelled".into()); }
-    let node = graph.get(id).ok_or_else(|| format!("Missing node #{id}"))?;
+    let node = graph.get(source.node)
+        .ok_or_else(|| format!("Missing node #{}", source.node))?;
+    let kind = supported_port(&node.kind, &source.port)
+        .ok_or_else(|| format!("Unsupported region output #{}:{}",
+            source.node, source.port))?;
     stats.computed_regions += 1;
     // Allocate the output only after dependent regions finish; otherwise
     // reserved but empty parent buffers inflate RSS and evade sample accounting.
@@ -220,7 +240,7 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
             {
                 return Err("Invalid local Adjust parameters".into());
             }
-            let input = evaluate(graph, size, node.inputs[0].node, rect, retained, stats, cancelled)?;
+            let input = evaluate(graph, size, &node.inputs[0], rect, retained, stats, cancelled)?;
             let exp = 2.0_f32.powf(-2.0 * shaper);
             values.reserve_exact(rect.area());
             for (i, &value) in input.values.iter().enumerate() {
@@ -236,8 +256,8 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
             stats.observe(retained + input.values.len() + values.len());
         }
         NodeKind::Blend { mix } => {
-            let left = evaluate(graph, size, node.inputs[0].node, rect, retained, stats, cancelled)?;
-            let right = evaluate(graph, size, node.inputs[1].node, rect,
+            let left = evaluate(graph, size, &node.inputs[0], rect, retained, stats, cancelled)?;
+            let right = evaluate(graph, size, &node.inputs[1], rect,
                 retained + left.values.len(), stats, cancelled)?;
             let influence = mix.clamp(0.0, 1.0);
             values.reserve_exact(rect.area());
@@ -247,16 +267,98 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
             }
             stats.observe(retained + left.values.len() + right.values.len() + values.len());
         }
+        NodeKind::MaskedBlend { mix } => {
+            let left = evaluate(graph, size, &node.inputs[0], rect,
+                retained, stats, cancelled)?;
+            let right = evaluate(graph, size, &node.inputs[1], rect,
+                retained + left.values.len(), stats, cancelled)?;
+            let mask = evaluate(graph, size, &node.inputs[2], rect,
+                retained + left.values.len() + right.values.len(), stats, cancelled)?;
+            let mix = mix.clamp(0.0, 1.0);
+            values.reserve_exact(rect.area());
+            for i in 0..rect.area() {
+                if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
+                let influence = mix * mask.values[i].clamp(0.0, 1.0);
+                values.push(left.values[i] * (1.0 - influence) +
+                    right.values[i] * influence);
+            }
+            stats.observe(retained + left.values.len() + right.values.len() +
+                mask.values.len() + values.len());
+        }
+        NodeKind::ElevationMask { low, high, feather } => {
+            let input = evaluate(graph, size, &node.inputs[0], rect,
+                retained, stats, cancelled)?;
+            let low = low.clamp(0.0, 1.0);
+            let high = high.clamp(low, 2.0);
+            let feather = feather.clamp(0.001, 0.5);
+            values.reserve_exact(rect.area());
+            for (i, &v) in input.values.iter().enumerate() {
+                if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
+                let rise = ((v - low) / feather).clamp(0.0, 1.0);
+                let fall = ((high - v) / feather).clamp(0.0, 1.0);
+                let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+                values.push(smooth(rise) * smooth(fall));
+            }
+            stats.observe(retained + input.values.len() + values.len());
+        }
+        NodeKind::MaskLevels { black, white, gamma, invert } => {
+            if !black.is_finite() || !white.is_finite() || !gamma.is_finite() ||
+                *black < 0.0 || *white > 1.0 || *black >= *white ||
+                !(0.1..=4.0).contains(gamma)
+            {
+                return Err("Mask levels require 0 <= black < white <= 1 and gamma 0.1–4".into());
+            }
+            let input = evaluate(graph, size, &node.inputs[0], rect,
+                retained, stats, cancelled)?;
+            values.reserve_exact(rect.area());
+            for (i, &v) in input.values.iter().enumerate() {
+                if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
+                if !v.is_finite() { return Err("Mask levels require finite mask input".into()); }
+                let t = ((v - black) / (white - black)).clamp(0.0, 1.0).powf(*gamma);
+                values.push(if *invert { 1.0 - t } else { t });
+            }
+            stats.observe(retained + input.values.len() + values.len());
+        }
+        NodeKind::Slope | NodeKind::Curvature => {
+            // First-order 4-neighbor differential. Nested local operations
+            // request their own halos transitively, cropped at the world edge.
+            let halo = halo_rect(rect, size, 1);
+            let input = evaluate(graph, size, &node.inputs[0], halo,
+                retained, stats, cancelled)?;
+            values.reserve_exact(rect.area());
+            for gy in rect.y..rect.y + rect.height {
+                if (gy - rect.y) % 16 == 0 && cancelled() {
+                    return Err("Build cancelled".into());
+                }
+                for gx in rect.x..rect.x + rect.width {
+                    let l = input.get(gx.saturating_sub(1), gy);
+                    let r = input.get((gx + 1).min(size - 1), gy);
+                    let u = input.get(gx, gy.saturating_sub(1));
+                    let d = input.get(gx, (gy + 1).min(size - 1));
+                    let value = match &node.kind {
+                        NodeKind::Slope => {
+                            let scale = (size - 1) as f32 * 0.25;
+                            let dx = r - l;
+                            let dy = d - u;
+                            let slope = (dx * dx + dy * dy).sqrt() * scale;
+                            (slope / (1.0 + slope)).clamp(0.0, 1.0)
+                        },
+                        NodeKind::Curvature => {
+                            let h = input.get(gx, gy);
+                            let laplacian = (l + r + u + d - 4.0 * h) * 18.0;
+                            0.5 + 0.5 * laplacian.clamp(-1.0, 1.0)
+                        },
+                        _ => unreachable!(),
+                    };
+                    values.push(value);
+                }
+            }
+            stats.observe(retained + input.values.len() + values.len());
+        }
         NodeKind::Blur { radius } => {
             let radius = radius.clamp(&1, &8).to_owned() as usize;
-            let x = rect.x.saturating_sub(radius);
-            let y = rect.y.saturating_sub(radius);
-            let halo = Region {
-                x, y,
-                width: (rect.x + rect.width + radius).min(size) - x,
-                height: (rect.y + rect.height + radius).min(size) - y,
-            };
-            let input = evaluate(graph, size, node.inputs[0].node, halo, retained, stats, cancelled)?;
+            let halo = halo_rect(rect, size, radius);
+            let input = evaluate(graph, size, &node.inputs[0], halo, retained, stats, cancelled)?;
             values.reserve_exact(rect.area());
             for gy in rect.y..rect.y + rect.height {
                 if (gy - rect.y) % 16 == 0 && cancelled() {
@@ -284,7 +386,7 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
         }
         _ => return Err(format!("Unsupported regional node: {}", node.kind.label())),
     }
-    Ok(RegionField { region: rect, values })
+    Ok(RegionField { region: rect, kind, values })
 }
 
 #[cfg(test)]
