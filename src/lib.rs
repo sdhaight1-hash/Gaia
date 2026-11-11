@@ -7,3 +7,4 @@ pub mod geology;
 pub mod import;
 pub mod color;
 pub mod drainage;
+pub mod tiles;
