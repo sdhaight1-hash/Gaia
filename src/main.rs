@@ -370,6 +370,11 @@ impl GaiaApp {
             NodeKind::Hydraulic { params: HydraulicParameters::default() });
         self.palette_node(ui, "▤  Terrace", "Add stepped elevation bands",
             NodeKind::Terrace { steps: 12, softness: 0.8 });
+        self.palette_node(ui, "≋  Stratify", "Add warped, tilted, locally broken sedimentary layers",
+            NodeKind::Stratify {
+                seed: 17, spacing: 0.08, intensity: 0.8,
+                warp: 0.55, tilt: 0.15, direction: 45.0,
+            });
         self.palette_node(ui, "◎  Blur", "Soften local terrain detail",
             NodeKind::Blur { radius: 2 });
         self.palette_node(ui, "◢  Slope Mask", "Derive a typed slope mask from terrain",
@@ -609,6 +614,15 @@ impl GaiaApp {
                 NodeKind::Terrace { steps, softness } => {
                     changed |= ui.add(egui::Slider::new(steps, 2..=64).text("Steps")).changed();
                     changed |= ui.add(egui::Slider::new(softness, 0.0..=1.0).text("Softness")).changed();
+                }
+                NodeKind::Stratify { seed, spacing, intensity, warp, tilt, direction } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(spacing, 0.01..=0.4).text("Layer spacing")).changed();
+                    changed |= ui.add(egui::Slider::new(intensity, 0.0..=1.0).text("Intensity")).changed();
+                    changed |= ui.add(egui::Slider::new(warp, 0.0..=1.0).text("Warp")).changed();
+                    changed |= ui.add(egui::Slider::new(tilt, -1.0..=1.0).text("Tilt")).changed();
+                    changed |= ui.add(egui::Slider::new(direction, 0.0..=360.0).text("Direction")).changed();
+                    ui.small("Adds broken layers to the selected terrain while retaining its main relief.");
                 }
                 NodeKind::Blur { radius } => {
                     changed |= ui.add(egui::Slider::new(radius, 1..=8).text("Radius")).changed();
@@ -1188,7 +1202,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
