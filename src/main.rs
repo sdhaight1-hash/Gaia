@@ -7,6 +7,7 @@ use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
+use gaia::color::{ColorField, export_rgb8};
 use std::path::Path;
 use history::EditHistory;
 
@@ -112,7 +113,11 @@ impl GaiaApp {
             match result.data {
                 Ok(result) => {
                     self.field = result.height;
-                    let image = height_image(&result.preview);
+                    let image = if let Some(color) = &result.preview_color {
+                        color_image(color)
+                    } else {
+                        height_image(&result.preview)
+                    };
                     if let Some(texture) = self.texture.as_mut() {
                         texture.set(image, egui::TextureOptions::LINEAR);
                     } else {
@@ -150,7 +155,11 @@ impl GaiaApp {
             Ok(value) => {
                 let path = Path::new(&self.filename)
                     .with_extension(format!("{}.png", self.preview_source.port));
-                self.status = match export_png16(&value.data, &path) {
+                self.status = match if let Some(color) = &value.color {
+                    export_rgb8(color, &path)
+                } else {
+                    export_png16(&value.data, &path)
+                } {
                     Ok(()) => format!("Exported selected map to {}", path.display()),
                     Err(error) => format!("Map export failed: {error}"),
                 };
@@ -255,7 +264,9 @@ impl GaiaApp {
     }
 
     fn add_node(&mut self, kind: NodeKind) {
-        let is_mask = matches!(kind, NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. });
+        let is_mask = matches!(kind,
+            NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. }
+            | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. });
         self.selected = self.project.graph.add(kind);
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
@@ -327,6 +338,16 @@ impl GaiaApp {
             NodeKind::Blend { mix: 0.5 });
         self.palette_node(ui, "◈  Masked Blend", "Blend two heightfields using a mask port",
             NodeKind::MaskedBlend { mix: 1.0 });
+        ui.add_space(16.0);
+        ui_theme::section(ui, "SURFACE COLOR");
+        self.palette_node(ui, "◉  Colorize", "Map low and high elevations to true RGBA colors",
+            NodeKind::Colorize {
+                low: [0.13, 0.27, 0.19],
+                high: [0.85, 0.85, 0.78],
+                midpoint: 0.5, contrast: 1.0,
+            });
+        self.palette_node(ui, "◐  Color Mixer", "Mix two RGBA fields through a mask",
+            NodeKind::ColorMixer { mix: 0.65 });
         ui.add_space(26.0);
         ui.separator();
         ui.label(egui::RichText::new("TIP").size(11.0)
@@ -378,7 +399,7 @@ impl GaiaApp {
                     self.export_mesh();
                     ui.close();
                 }
-                if ui.button("Selected graph output  ·  PNG16").clicked() {
+                if ui.button("Selected output · PNG16 / RGB8").clicked() {
                     self.export_selected_map();
                     ui.close();
                 }
@@ -531,8 +552,26 @@ impl GaiaApp {
                 NodeKind::Blur { radius } => {
                     changed |= ui.add(egui::Slider::new(radius, 1..=8).text("Radius")).changed();
                 }
-                NodeKind::Blend { mix } | NodeKind::MaskedBlend { mix } => {
+                NodeKind::Blend { mix } | NodeKind::MaskedBlend { mix }
+                | NodeKind::ColorMixer { mix } => {
                     changed |= ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")).changed();
+                    if matches!(node.kind, NodeKind::ColorMixer { .. }) {
+                        ui.small("Requires two Color ports and a Mask port.");
+                    }
+                }
+                NodeKind::Colorize { low, high, midpoint, contrast } => {
+                    ui.horizontal(|ui| {
+                        ui.label("Low elevation");
+                        changed |= ui.color_edit_button_rgb(low).changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("High elevation");
+                        changed |= ui.color_edit_button_rgb(high).changed();
+                    });
+                    changed |= ui.add(egui::Slider::new(midpoint, 0.01..=0.99)
+                        .text("Midpoint")).changed();
+                    changed |= ui.add(egui::Slider::new(contrast, 0.1..=6.0)
+                        .text("Contrast")).changed();
                 }
                 NodeKind::Slope => {
                     ui.label("Slope mask derived from surrounding elevation differences.");
@@ -1016,9 +1055,20 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
-        NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } => ui_theme::AMBER,
+        NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
+        NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
+}
+
+fn color_image(field: &ColorField) -> egui::ColorImage {
+    let mut rgba = Vec::with_capacity(field.pixels.len() * 4);
+    for pixel in &field.pixels {
+        for &channel in pixel {
+            rgba.push((channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([field.size, field.size], &rgba)
 }
 
 fn height_image(field: &HeightField) -> egui::ColorImage {
