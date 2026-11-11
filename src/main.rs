@@ -11,11 +11,14 @@ use gaia::terrain::{export_obj, export_png16, HeightField, MaterialPalette, Node
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
+use gaia::hydraulic_build::build_hydraulic_regions;
+use gaia::hydraulic_exchange::WorldEdge;
 use gaia::color::{ColorField, export_rgb8, export_splat_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::collections::BTreeSet;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult};
 use history::EditHistory;
 use graph_view::{GraphView, CARD_WIDTH, PORT_START, PORT_STEP};
@@ -115,6 +118,32 @@ fn palette_matches(name: &str, description: &str, search: &str) -> bool {
         || description.to_lowercase().contains(&query)
 }
 
+/// Separate long-running export state; the editor graph stays interactive.
+struct HydraulicExport {
+    open: bool,
+    node: u64,
+    resolution: usize,
+    tiles: usize,
+    output: String,
+    closed_edge: bool,
+    checkpoint: bool,
+    completion: Option<Receiver<Result<PathBuf, String>>>,
+}
+
+impl Default for HydraulicExport {
+    fn default() -> Self {
+        Self {
+            open: false, node: 0, resolution: 1024, tiles: 4,
+            output: String::new(), closed_edge: false, checkpoint: false,
+            completion: None,
+        }
+    }
+}
+
+fn min_hydraulic_tiles(resolution: usize) -> usize {
+    resolution.div_ceil(256).max(2)
+}
+
 struct GaiaApp {
     project: Project,
     field: HeightField,
@@ -152,6 +181,7 @@ struct GaiaApp {
     graph_zoom_step: f32,
     graph_view: GraphView,
     delete_confirmation: Option<u64>,
+    hydraulic_export: HydraulicExport,
 }
 
 impl GaiaApp {
@@ -213,6 +243,7 @@ impl GaiaApp {
             graph_zoom_step: 1.0,
             graph_view: GraphView::default(),
             delete_confirmation: None,
+            hydraulic_export: HydraulicExport::default(),
         }
     }
 
@@ -281,6 +312,153 @@ impl GaiaApp {
 
     fn refresh_preview(&mut self, _ctx: &egui::Context) {
         self.graph_dirty = true;
+    }
+
+    fn open_hydraulic_export(&mut self) {
+        self.hydraulic_export.node = self.selected;
+        let source = Path::new(&self.filename);
+        let prefix = source.file_stem().and_then(|name| name.to_str())
+            .unwrap_or("terrain");
+        let directory = source.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        self.hydraulic_export.output = directory.join(format!("{prefix}-eroded"))
+            .to_string_lossy().into_owned();
+        self.hydraulic_export.open = true;
+    }
+
+    fn launch_hydraulic_export(&mut self) {
+        if self.hydraulic_export.completion.is_some() {
+            self.status = "A hydraulic region build is already running".into();
+            return;
+        }
+        let size = self.hydraulic_export.resolution;
+        let tiles = self.hydraulic_export.tiles;
+        let min_tiles = min_hydraulic_tiles(size);
+        if tiles < min_tiles {
+            self.status = format!(
+                "Hydraulic export needs at least {min_tiles} tiles per axis at {size}²"
+            );
+            return;
+        }
+        let output = self.hydraulic_export.output.trim();
+        if output.is_empty() {
+            self.status = "Hydraulic export needs a destination filename stem".into();
+            return;
+        }
+        let output = PathBuf::from(output);
+        let mut snapshot = self.project.clone();
+        snapshot.resolution = size;
+        let node = self.hydraulic_export.node;
+        let checkpoint = self.hydraulic_export.checkpoint;
+        let edge = if self.hydraulic_export.closed_edge {
+            WorldEdge::Closed
+        } else {
+            WorldEdge::Open
+        };
+        let (sender, receiver) = mpsc::channel();
+        self.hydraulic_export.completion = Some(receiver);
+        std::thread::spawn(move || {
+            let result = build_hydraulic_regions(
+                &snapshot, node, tiles, &output, edge, checkpoint,
+            );
+            let _ = sender.send(result);
+        });
+        self.status = format!("Building hydraulic regions · {size}² · {tiles}×{tiles} tiles");
+    }
+
+    fn poll_hydraulic_export(&mut self, ctx: &egui::Context) {
+        let completed = self.hydraulic_export.completion.as_ref()
+            .map(|receiver| receiver.try_recv());
+        match completed {
+            Some(Ok(Ok(folder))) => {
+                self.hydraulic_export.completion = None;
+                self.status = format!("Hydraulic region build complete: {}", folder.display());
+                ctx.request_repaint();
+            }
+            Some(Ok(Err(error))) => {
+                self.hydraulic_export.completion = None;
+                self.status = format!("Hydraulic export failed: {error}");
+                ctx.request_repaint();
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.hydraulic_export.completion = None;
+                self.status = "Hydraulic export failed: background worker disconnected".into();
+            }
+            Some(Err(TryRecvError::Empty)) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+            None => {}
+        }
+    }
+
+    fn hydraulic_export_dialog(&mut self, ctx: &egui::Context) {
+        if !self.hydraulic_export.open { return; }
+        let mut open = true;
+        let mut launch = false;
+        let node = self.hydraulic_export.node;
+        egui::Window::new("Hydraulic region build")
+            .open(&mut open)
+            .default_width(435.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(format!(
+                    "Hydraulic node #{node} · Six PNG16 map outputs"
+                )).strong().color(ui_theme::TEXT));
+                ui.label(egui::RichText::new(
+                    "Runs on a worker thread; the editor stays responsive.                      Unsupported upstream global operators are rejected."
+                ).size(12.0).color(ui_theme::MUTED));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label("Resolution");
+                    egui::ComboBox::from_id_salt("gaia_hydro_region_resolution")
+                        .selected_text(format!("{}²", self.hydraulic_export.resolution))
+                        .show_ui(ui, |ui| {
+                            for resolution in [256, 512, 1024, 2048, 4096, 8192] {
+                                ui.selectable_value(
+                                    &mut self.hydraulic_export.resolution, resolution,
+                                    format!("{resolution}²"),
+                                );
+                            }
+                        });
+                    ui.label("Tiles / axis");
+                    ui.add(egui::DragValue::new(&mut self.hydraulic_export.tiles)
+                        .range(2..=64));
+                });
+                let minimum = min_hydraulic_tiles(self.hydraulic_export.resolution);
+                if self.hydraulic_export.tiles < minimum {
+                    ui.colored_label(ui_theme::AMBER,
+                        format!("This resolution requires at least {minimum} tiles per axis."));
+                } else {
+                    ui.label(egui::RichText::new(
+                        "Each simulation tile owns at most 256×256 samples; exports share one border."
+                    ).size(11.0).color(ui_theme::MUTED));
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Output stem");
+                    ui.add(egui::TextEdit::singleline(
+                        &mut self.hydraulic_export.output,
+                    ).desired_width(290.0));
+                });
+                ui.checkbox(&mut self.hydraulic_export.closed_edge,
+                    "Closed outer world boundary");
+                ui.checkbox(&mut self.hydraulic_export.checkpoint,
+                    "Save full-precision restart checkpoint");
+                ui.label(egui::RichText::new(
+                    "The output folder is new and will not overwrite earlier builds.                      PNG maps normalize to 0..1; checkpoint fields retain raw f32 values."
+                ).size(11.0).color(ui_theme::MUTED));
+                ui.add_space(10.0);
+                let can_build = self.hydraulic_export.completion.is_none()
+                    && self.hydraulic_export.tiles >= minimum
+                    && !self.hydraulic_export.output.trim().is_empty();
+                if ui.add_enabled(can_build, egui::Button::new("Build six terrain maps"))
+                    .clicked()
+                {
+                    launch = true;
+                }
+            });
+        self.hydraulic_export.open = open && !launch;
+        if launch { self.launch_hydraulic_export(); }
     }
 
     fn export_selected_map(&mut self) {
@@ -927,6 +1105,18 @@ impl GaiaApp {
                 }
                 if ui.button("Selected output · 4×4 tiled PNG").clicked() {
                     self.export_selected_tiles(4);
+                    ui.close();
+                }
+                ui.separator();
+                let selected_hydraulic = self.project.graph.get(self.selected)
+                    .is_some_and(|node| matches!(&node.kind, NodeKind::Hydraulic { .. }));
+                if ui.add_enabled(
+                    selected_hydraulic && self.hydraulic_export.completion.is_none(),
+                    egui::Button::new("Hydraulic region build…"),
+                ).on_hover_text(
+                    "Select a Hydraulic node, then build a high-resolution six-map set                      with disk-backed 2D erosion and optional checkpoint."
+                ).clicked() {
+                    self.open_hydraulic_export();
                     ui.close();
                 }
             });
@@ -2094,6 +2284,7 @@ impl eframe::App for GaiaApp {
             .show(ui, |ui| self.viewport(ui));
 
         self.delete_confirmation_dialog(&ctx);
+        self.hydraulic_export_dialog(&ctx);
         if !std::mem::take(&mut self.skip_history_record) {
             self.history.record_frame(
                 project_before_frame, &self.project,
@@ -2104,6 +2295,7 @@ impl eframe::App for GaiaApp {
             self.rebuild(&ctx);
         }
         self.poll_worker(&ctx);
+        self.poll_hydraulic_export(&ctx);
         if self.gpu_dirty {
             if let Some(render_state) = frame.wgpu_render_state() {
                 gpu::upload(render_state, &self.field,
@@ -2177,6 +2369,20 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod file_drop_tests {
     use super::*;
+
+    #[test]
+    fn hydraulic_tile_budget_rejects_memory_unbounded_build_settings() {
+        assert_eq!(min_hydraulic_tiles(256), 2);
+        assert_eq!(min_hydraulic_tiles(512), 2);
+        assert_eq!(min_hydraulic_tiles(1024), 4);
+        assert_eq!(min_hydraulic_tiles(2048), 8);
+        assert_eq!(min_hydraulic_tiles(4096), 16);
+        assert_eq!(min_hydraulic_tiles(8192), 32);
+        let defaults = HydraulicExport::default();
+        assert_eq!(defaults.resolution, 1024);
+        assert!(defaults.tiles >= min_hydraulic_tiles(defaults.resolution));
+        assert!(defaults.completion.is_none());
+    }
 
     #[test]
     fn project_dialog_directory_uses_existing_parent_only() {
