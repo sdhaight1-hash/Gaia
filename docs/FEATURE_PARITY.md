@@ -12,7 +12,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 
 | Capability | Implemented on latest development branch | Still missing for Gaea-class workflow |
 |---|---|---|
-| Graph | Typed Height/Mask/Water output ports, multi-output nodes, direct socket wiring, safe unused-node deletion, input type validation, legacy JSON migration, cached DAG, async cancellable builds | Graph undo/redo, macros, expressions, variables, user subgraphs and deletion/rewiring of connected nodes |
+| Graph | Typed Height/Mask/Water output ports, multi-output nodes, direct socket wiring, 64-edit project undo/redo, safe unused-node deletion, input type validation, legacy JSON migration, cached DAG, async cancellable builds | Macros, expressions, variables, user subgraphs and deletion/rewiring of connected nodes |
 | Terrain generators | Mountain, Noise, Range, Crater, Dunes, Canyon | Islands, volcanoes, uplift/tectonics, rock layers, geological diversity, art-directed generator fidelity |
 | Terrain modifiers | Terrace, Blur, Warp, Blend, Masked Blend | Fracture, strata, displacement operators, custom remaps, more blending modes |
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
