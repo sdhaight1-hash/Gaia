@@ -21,7 +21,9 @@ Exports PNG16 for scalar fields, RGB8 for Color fields, and OBJ for height outpu
 Writes STEM.report.json. --tiles produces N×N PNGs in STEM.tiles/ plus
 STEM.tiles.json, each tile sharing one identical border pixel with neighbors.
 This subdivides an already-built field; it does not reduce graph build memory.
-Resolution must be 32–512; tile COUNT must be 2–8.
+Resolution must be 32–2048; tile COUNT must be 2–8.
+The headless 1K/2K build is still a full-grid evaluation; it does NOT
+stream evaluation or reduce memory. Desktop previews remain at up to 512.
 "#;
 
 #[derive(Debug)]
@@ -67,8 +69,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
             "--resolution" => {
                 let value = it.next().ok_or("--resolution requires an integer")?;
                 let size: usize = value.parse().map_err(|_| "resolution must be an integer")?;
-                if !(32..=512).contains(&size) {
-                    return Err("resolution must be between 32 and 512".into());
+                if !(32..=gaia::pipeline::MAX_BUILD_RESOLUTION).contains(&size) {
+                    return Err(format!("resolution must be between 32 and {}",
+                        gaia::pipeline::MAX_BUILD_RESOLUTION));
                 }
                 resolution = Some(size);
             }
@@ -236,6 +239,14 @@ mod tests {
         assert!(parse_args(vec![
             "--demo".into(), "--output".into(), "x".into(), "--resolution".into(),
             "4096".into()
+        ]).is_err());
+        assert_eq!(parse_args(vec![
+            "--demo".into(), "--output".into(), "x".into(),
+            "--resolution".into(), "2048".into()
+        ]).unwrap().unwrap().resolution, Some(2048));
+        assert!(parse_args(vec![
+            "--demo".into(), "--output".into(), "x".into(),
+            "--resolution".into(), "2049".into()
         ]).is_err());
         assert!(parse_args(vec!["--help".into()]).unwrap().is_none());
     }
