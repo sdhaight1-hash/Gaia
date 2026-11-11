@@ -629,7 +629,11 @@ impl GaiaApp {
         let response = ui.add_sized([ui.available_width(), 34.0], button)
             .on_hover_text(detail);
         if response.clicked() {
-            self.add_node(kind);
+            if matches!(kind, NodeKind::ImportHeight { .. }) {
+                self.import_heightmap_dialog();
+            } else {
+                self.add_node(kind);
+            }
             ui.close();
         }
     }

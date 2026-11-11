@@ -421,6 +421,13 @@ impl Graph {
             });
         }
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+        // After downstream-branch deletion node #1 is not guaranteed to
+        // survive. Use an existing height node for multi-height fallback.
+        let fallback_height = self.nodes.iter().find(|node|
+            node.kind.output_ports().iter().any(|(port, ty)|
+                *port == "height" && *ty == crate::pipeline::PortType::Height))
+            .map(|node| PortRef::height(node.id))
+            .unwrap_or_else(|| PortRef::height(self.output));
         let inputs = if matches!(kind, NodeKind::MaskLevels { .. }) {
             let mask = self.nodes.iter().rev().find_map(|node| {
                 node.kind.output_ports().iter()
@@ -447,14 +454,14 @@ impl Graph {
             match kind.input_count() {
                 0 => vec![],
                 1 => vec![PortRef::height(self.output)],
-                2 => vec![PortRef::height(self.output), PortRef::height(1)],
+                2 => vec![PortRef::height(self.output), fallback_height.clone()],
                 3 => {
                     let mask = self.nodes.iter().rev().find_map(|node| {
                         node.kind.output_ports().iter()
                             .find(|(_, ty)| *ty == crate::pipeline::PortType::Mask)
                             .map(|(name, _)| PortRef::new(node.id, *name))
                     }).unwrap_or_else(|| PortRef::new(self.output, "wear"));
-                    vec![PortRef::height(self.output), PortRef::height(1), mask]
+                    vec![PortRef::height(self.output), fallback_height, mask]
                 }
                 _ => unreachable!("all node kinds have up to three inputs"),
             }
@@ -906,6 +913,27 @@ mod tests {
         let mut invalid = field;
         invalid.values[0] = f32::NAN;
         assert!(export_obj(&invalid, &file).is_err());
+    }
+
+    #[test]
+    fn adding_blends_after_deleting_original_root_keeps_valid_input_ports() {
+        let mut graph = Project::default().graph;
+        let alternate = graph.add(NodeKind::Noise {
+            seed: 13, frequency: 5.0, amplitude: 0.3,
+        });
+        graph.remove_branch(1).unwrap();
+        assert!(graph.get(1).is_none());
+        assert_eq!(graph.output, alternate);
+        for kind in [
+            NodeKind::Blend { mix: 0.5 },
+            NodeKind::MaskedBlend { mix: 0.7 },
+        ] {
+            let id = graph.add(kind);
+            for source in &graph.get(id).unwrap().inputs {
+                assert!(graph.get(source.node).is_some(), "dangling new input: {:?}", source);
+            }
+            assert!(graph.evaluate_port(32, &PortRef::height(id)).is_ok());
+        }
     }
 
     #[test]
