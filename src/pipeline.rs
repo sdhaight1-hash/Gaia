@@ -154,6 +154,10 @@ pub struct GraphCache {
     backend: Option<Arc<dyn BlendCompute>>,
 }
 
+/// Maximum full-grid build resolution. Interactive previews remain limited
+/// to 512 pixels by the desktop UI; 2K fields require headless export.
+pub const MAX_BUILD_RESOLUTION: usize = 2048;
+
 impl GraphCache {
     pub fn set_backend(&mut self, backend: Option<Arc<dyn BlendCompute>>) {
         self.backend = backend;
@@ -188,8 +192,8 @@ impl GraphCache {
         &mut self, graph: &Graph, resolution: usize, source: &PortRef,
         cancelled: Option<(&AtomicU64, u64)>,
     ) -> Result<FieldValue, String> {
-        if !(32..=512).contains(&resolution) {
-            return Err("Resolution must be between 32 and 512".to_owned());
+        if !(32..=MAX_BUILD_RESOLUTION).contains(&resolution) {
+            return Err(format!("Resolution must be between 32 and {MAX_BUILD_RESOLUTION}"));
         }
         if graph.nodes.len() > 256 {
             return Err("Project exceeds 256 nodes".to_owned());
@@ -893,6 +897,28 @@ mod tests {
         ).unwrap_err();
         assert!(error.contains("cancelled"));
         assert_eq!(cache.stats.computed, 0);
+    }
+
+    #[test]
+    fn headless_2k_generation_is_finite_and_matches_normalized_corners() {
+        let mut graph = Project::default().graph;
+        let noise = graph.add(NodeKind::Noise {
+            seed: 19, frequency: 7.0, amplitude: 0.8
+        });
+        let mut cache = GraphCache::default();
+        let high = cache.evaluate(&graph, 2048, &PortRef::height(noise))
+            .unwrap();
+        let preview = cache.evaluate(&graph, 32, &PortRef::height(noise))
+            .unwrap();
+        assert_eq!(high.data.size, 2048);
+        assert_eq!(high.data.values.len(), 2048 * 2048);
+        for &(x,y) in &[(0,0),(1,0),(0,1),(1,1)] {
+            let hx = x * 2047;
+            let hy = y * 2047;
+            assert_eq!(high.data.get(hx,hy), preview.data.get(x*31,y*31));
+        }
+        assert!(high.data.values.iter().all(|v| v.is_finite()));
+        assert!(cache.evaluate(&graph, 2049, &PortRef::height(noise)).is_err());
     }
 
     #[test]
