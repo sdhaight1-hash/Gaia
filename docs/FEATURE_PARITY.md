@@ -17,7 +17,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Terrain modifiers | Terrace, Blur, Warp, Blend, Masked Blend | Fracture, strata, displacement operators, custom remaps, more blending modes |
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
 | Hydrology | Water depth, suspended sediment, cumulative flow map | Rivers/lakes/sea geometry, watershed hierarchy, coastlines, stable high-resolution water systems |
-| Masks | Slope, Curvature, Elevation, Wear, Deposits, Flow | Aspect, terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
+| Masks | Slope, Curvature, compass-facing Aspect, Elevation, Wear, Deposits, Flow | Terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
 | Color/materials | No true Color fields | Colorized surfaces, gradients, texture/multi-channel materials, splat/normal maps |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
