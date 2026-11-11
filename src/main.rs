@@ -1,5 +1,6 @@
 mod gpu;
 mod graph_view;
+mod graph_edit;
 mod material_texture;
 mod ui_theme;
 mod history;
