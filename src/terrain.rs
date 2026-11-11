@@ -821,8 +821,18 @@ mod tests {
     }
 
     #[test]
-    fn masked_blend_without_existing_mask_generates_slope_source() {
+    fn masked_blend_reuses_existing_wear_or_generates_missing_slope() {
+        // A default scene has Thermal Erosion's valid wear mask.
+        let mut existing = Project::default();
+        let blend = existing.graph.add(NodeKind::MaskedBlend { mix: 0.8 });
+        assert_eq!(existing.graph.get(blend).unwrap().inputs[2],
+            PortRef::new(2, "wear"));
+        assert!(existing.graph.evaluate(32).is_ok());
+
+        // A graph containing only a height source requires a new mask.
         let mut project = Project::default();
+        project.graph.nodes.retain(|node| node.id == 1);
+        project.graph.output = 1;
         let blend = project.graph.add(NodeKind::MaskedBlend { mix: 0.8 });
         let input = &project.graph.get(blend).unwrap().inputs[2];
         assert_eq!(input.port, "slope");
