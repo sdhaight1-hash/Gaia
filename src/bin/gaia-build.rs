@@ -32,13 +32,13 @@ This subdivides an already-built field; it does not reduce graph build memory.
 --all-outputs NODE exports every named output of a node using one shared
 evaluation cache and writes STEM.batch.report.json. Do not combine with --port.
 Regular resolution must be 32–2048; --tiles COUNT 2–8 splits a FULL graph.
---region-tiles COUNT 2–64 evaluates Height/Mask and RGB Color regions directly,
+--region-tiles COUNT 2–64 evaluates Height/Mask, RGB Color and RGBA Splat regions,
 up to 8192 resolution, with exact shared border samples and bounded working
 memory. This mode requires --no-obj, and does not output a stitched PNG/mesh.
 Supports local Mountain, Noise, Adjust (autolevel OFF), Blur, Blend, Masked
 Blend, Slope, Curvature, Aspect, Elevation Mask, Mask Levels, Colorize and
-Color Mixer ancestors. Erosion, hydrology, autolevel and other global nodes
-are rejected
+Color Mixer and Material Masks (sand/soil/rock/snow, albedo, splat).
+Erosion, hydrology, autolevel and other global nodes are rejected
 explicitly (never silently fall back to full-grid evaluation). Desktop
 previews remain at up to 512.
 "#;
@@ -298,7 +298,7 @@ fn build_all_outputs(
     Ok(())
 }
 
-/// Independent world-coordinate Height/Mask/Color regions; each tile is
+/// Independent world-coordinate Height/Mask/Color/Splat regions; each tile is
 /// exported and released before the next one, without full-grid evaluation.
 fn build_region_tiles(project: &Project, options: &Options,
     source: &PortRef, started: Instant,
@@ -312,10 +312,14 @@ fn build_region_tiles(project: &Project, options: &Options,
         .and_then(|node| node.kind.output_ports().iter()
             .find(|(port, _)| *port == source.port).map(|(_, kind)| *kind))
         .ok_or("Cannot resolve region output type")?;
-    if !matches!(kind, PortType::Height | PortType::Mask | PortType::Color) {
-        return Err("Only scalar Height/Mask and RGB Color regions are available".into());
+    if !matches!(kind, PortType::Height | PortType::Mask | PortType::Color | PortType::Splat) {
+        return Err("Only Height/Mask/Color/Splat regions are available".into());
     }
-    let format = if kind == PortType::Color { "RGB8" } else { "Grayscale16" };
+    let format = match kind {
+        PortType::Color => "RGB8",
+        PortType::Splat => "RGBA8",
+        _ => "Grayscale16",
+    };
     let directory = options.output.with_extension("region.tiles");
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let mut tiles = Vec::with_capacity(count * count);
@@ -328,7 +332,7 @@ fn build_region_tiles(project: &Project, options: &Options,
     for ty in 0..count {
         for tx in 0..count {
             let rect = layout.tile(tx, ty)?;
-            let (scalar, rgb, stats) = if kind == PortType::Color {
+            let (scalar, rgb, stats) = if matches!(kind, PortType::Color | PortType::Splat) {
                 let (field, stats) = evaluate_color_region(
                     &project.graph, project.resolution, source, rect)?;
                 (None, Some(field), stats)
@@ -360,7 +364,11 @@ fn build_region_tiles(project: &Project, options: &Options,
             let filename = format!("x{tx:02}_y{ty:02}.png");
             let filepath = directory.join(&filename);
             if let Some(color) = rgb {
-                color.export_rgb8(&filepath)?;
+                if kind == PortType::Splat {
+                    color.export_splat_rgba8(&filepath)?;
+                } else {
+                    color.export_rgb8(&filepath)?;
+                }
             } else {
                 scalar.expect("scalar region missing").export_png16(&filepath)?;
             }
@@ -394,7 +402,9 @@ fn build_region_tiles(project: &Project, options: &Options,
         "resolution": project.resolution,
         "node": source.node, "port": source.port,
         "type": kind.label(), "format": format,
-        "statistics_channel": if kind == PortType::Color {
+        "statistics_channel": if kind == PortType::Splat {
+            "RGB weighted proxy; A not included"
+        } else if kind == PortType::Color {
             "Rec709 luminance proxy"
         } else { "raw scalar" },
         "min_raw": raw_min, "max_raw": raw_max,
@@ -773,6 +783,67 @@ mod tests {
         for row in 0..left.height {
             assert_eq!(&a[(row*left.width+left.width-1)*3..(row*left.width+left.width)*3],
                 &b[(row*right.width)*3..(row*right.width+1)*3]);
+        }
+    }
+
+    #[test]
+    fn region_cli_exports_material_splat_rgba8_with_exact_255_weight_sum() {
+        use gaia::terrain::NodeKind;
+        let temp = tempfile::tempdir().unwrap();
+        let stem = temp.path().join("material-splat");
+        let scene = temp.path().join("materials.gaia.json");
+        let mut project = Project::default();
+        project.resolution = 65;
+        let material = project.graph.add_from(NodeKind::MaterialMasks {
+            sea_level: 0.25, beach_width: 0.08,
+            rock_slope: 0.32, rock_blend: 0.10,
+            snowline: 0.8, snow_blend: 0.12,
+            palette: gaia::terrain::MaterialPalette::default(),
+        }, &PortRef::height(1));
+        project.save(&scene).unwrap();
+        let source = PortRef::new(material, "splat");
+        build(parse_args(vec![
+            "--project".into(), scene.to_string_lossy().into_owned(),
+            "--output".into(), stem.to_string_lossy().into_owned(),
+            "--port".into(), format!("{material}:splat"),
+            "--no-obj".into(), "--region-tiles".into(), "3".into(),
+        ]).unwrap().unwrap()).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("region.tiles.json")).unwrap()).unwrap();
+        assert_eq!(manifest["type"], "Splat");
+        assert_eq!(manifest["format"], "RGBA8");
+        assert_eq!(manifest["tile_count"], 9);
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("region.report.json")).unwrap()).unwrap();
+        assert_eq!(report["unique_samples"], 65*65);
+        assert_eq!(report["statistics_channel"], "RGB weighted proxy; A not included");
+        let expected = project.graph.evaluate_port(65, &source).unwrap().color.unwrap();
+        let layout = RegionLayout::new(65, 3).unwrap();
+        for ty in 0..3 {
+            for tx in 0..3 {
+                let rect = layout.tile(tx, ty).unwrap();
+                let path = stem.with_extension("region.tiles")
+                    .join(format!("x{tx:02}_y{ty:02}.png"));
+                let mut reader = png::Decoder::new(std::io::BufReader::new(
+                    std::fs::File::open(path).unwrap())).read_info().unwrap();
+                let mut bytes = vec![0_u8; reader.output_buffer_size()];
+                let info = reader.next_frame(&mut bytes).unwrap();
+                assert_eq!(info.color_type, png::ColorType::Rgba);
+                assert_eq!(info.bit_depth, png::BitDepth::Eight);
+                assert_eq!(info.width as usize, rect.width);
+                assert_eq!(info.height as usize, rect.height);
+                for y in 0..rect.height {
+                    for x in 0..rect.width {
+                        let i = y*rect.width+x;
+                        let rgba = &bytes[i*4..i*4+4];
+                        let exp = expected.pixels[(rect.y+y)*65+rect.x+x];
+                        for c in 0..4 {
+                            assert!((rgba[c] as f32 / 255.0 - exp[c]).abs() <= 1.0 / 255.0 + 1e-6);
+                        }
+                        assert_eq!(rgba.iter().map(|&v| v as u16).sum::<u16>(), 255);
+                    }
+                }
+            }
         }
     }
 
