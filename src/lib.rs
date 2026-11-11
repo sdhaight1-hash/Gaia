@@ -5,6 +5,7 @@ pub mod gpu_compute;
 pub mod hydrology;
 pub mod hydraulic_exchange;
 pub mod hydraulic_stream;
+pub mod hydraulic_checkpoint;
 pub mod geology;
 pub mod import;
 pub mod color;
