@@ -1,4 +1,5 @@
 mod gpu;
+mod graph_view;
 mod material_texture;
 mod ui_theme;
 mod history;
@@ -14,6 +15,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult};
 use history::EditHistory;
+use graph_view::{GraphView, CARD_WIDTH, PORT_START, PORT_STEP};
 
 #[derive(Debug, PartialEq, Eq)]
 enum DroppedDocument {
@@ -42,18 +44,43 @@ fn project_dialog_directory(path: &Path) -> Option<&Path> {
         !parent.as_os_str().is_empty() && parent.is_dir())
 }
 
-/// The scroll content must encompass every node, not just the first few rows.
-/// The old fixed 360px canvas stranded nodes below row 2 outside its layout.
-fn graph_canvas_extent(nodes: &[Node], viewport_width: f32) -> egui::Vec2 {
-    let mut width = viewport_width.max(920.0);
-    let mut height = 360.0_f32;
-    for node in nodes {
-        let ports = node.inputs.len().max(node.kind.output_ports().len()).max(1);
-        let node_height = 74.0_f32.max(47.0 + ports as f32 * 17.0);
-        width = width.max(node.position[0] + 194.0 + 80.0);
-        height = height.max(node.position[1] + node_height + 80.0);
+/// Convert one port location from serialized graph units to screen pixels.
+fn graph_socket(
+    view: &GraphView, viewport: egui::Rect, node: &Node, output: bool, slot: usize,
+) -> egui::Pos2 {
+    view.to_screen(viewport, egui::pos2(
+        node.position[0] + if output { CARD_WIDTH } else { 0.0 },
+        node.position[1] + PORT_START + slot as f32 * PORT_STEP,
+    ))
+}
+
+fn graph_port_color(ty: PortType) -> egui::Color32 {
+    match ty {
+        PortType::Height => ui_theme::BLUE,
+        PortType::Mask => ui_theme::AMBER,
+        PortType::Color => ui_theme::ACCENT,
+        PortType::Splat => egui::Color32::from_rgb(192, 139, 220),
+        PortType::Water => egui::Color32::from_rgb(77, 173, 223),
+        PortType::Vector | PortType::Points | PortType::Mesh => ui_theme::MUTED,
     }
-    egui::vec2(width, height)
+}
+
+fn graph_wire_points(from: egui::Pos2, to: egui::Pos2, zoom: f32) -> Vec<egui::Pos2> {
+    let control = ((to.x - from.x).abs() * 0.43).max(40.0 * zoom);
+    let a = from;
+    let b = from + egui::vec2(control, 0.0);
+    let c = to - egui::vec2(control, 0.0);
+    let d = to;
+    (0..=20).map(|step| {
+        let t = step as f32 / 20.0;
+        let u = 1.0 - t;
+        egui::pos2(
+            a.x * u * u * u + 3.0 * b.x * u * u * t
+                + 3.0 * c.x * u * t * t + d.x * t * t * t,
+            a.y * u * u * u + 3.0 * b.y * u * u * t
+                + 3.0 * c.y * u * t * t + d.y * t * t * t,
+        )
+    }).collect()
 }
 
 /// Explicitly build a second, genuinely different Color input for a mixer.
@@ -95,6 +122,7 @@ struct GaiaApp {
     preview_source: PortRef,
     selected: u64,
     wire_start: Option<PortRef>,
+    wire_dragging: bool,
     filename: String,
     node_search: String,
     status: String,
@@ -111,6 +139,10 @@ struct GaiaApp {
     history: EditHistory,
     skip_history_record: bool,
     focus_graph_selection: bool,
+    fit_graph_requested: bool,
+    graph_zoom_step: f32,
+    graph_view: GraphView,
+    delete_confirmation: Option<u64>,
 }
 
 impl GaiaApp {
@@ -137,6 +169,7 @@ impl GaiaApp {
         Self {
             selected: project.graph.output,
             wire_start: None,
+            wire_dragging: false,
             project,
             field,
             material_color: None,
@@ -160,6 +193,10 @@ impl GaiaApp {
             history: EditHistory::default(),
             skip_history_record: false,
             focus_graph_selection: false,
+            fit_graph_requested: true,
+            graph_zoom_step: 1.0,
+            graph_view: GraphView::default(),
+            delete_confirmation: None,
         }
     }
 
@@ -371,6 +408,10 @@ impl GaiaApp {
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
                 self.focus_graph_selection = true;
+                self.fit_graph_requested = true;
+                self.wire_start = None;
+                self.wire_dragging = false;
+                self.delete_confirmation = None;
                 self.history.clear();
                 self.skip_history_record = true;
                 self.graph_dirty = true;
@@ -423,9 +464,80 @@ impl GaiaApp {
             self.preview_source = PortRef::height(self.project.graph.output);
         }
         self.wire_start = None;
+        self.wire_dragging = false;
+        self.delete_confirmation = None;
         self.graph_dirty = true;
         self.unsaved = true;
         self.status = label.to_owned();
+    }
+
+    /// Delete a free node or bypass a connected, type-compatible operator.
+    /// Otherwise request explicit confirmation before removing its consumers.
+    fn request_node_deletion(&mut self, id: u64) {
+        match self.project.graph.remove_bypass(id) {
+            Ok(()) => self.finish_node_deletion(format!("Deleted node #{id}; upstream wires reconnected")),
+            Err(error) => {
+                if self.project.graph.dependent_branch(id)
+                    .is_ok_and(|branch| branch.len() > 1)
+                {
+                    self.delete_confirmation = Some(id);
+                    self.status = format!("{error} — confirm downstream deletion or cancel");
+                } else {
+                    self.status = error;
+                }
+            }
+        }
+    }
+
+    fn finish_node_deletion(&mut self, status: String) {
+        self.selected = self.project.graph.output;
+        self.preview_source = PortRef::height(self.selected);
+        self.wire_start = None;
+        self.wire_dragging = false;
+        self.delete_confirmation = None;
+        self.focus_graph_selection = true;
+        self.graph_dirty = true;
+        self.unsaved = true;
+        self.status = status;
+    }
+
+    fn confirm_branch_deletion(&mut self, id: u64) {
+        match self.project.graph.remove_branch(id) {
+            Ok(removed) => self.finish_node_deletion(format!(
+                "Deleted {} connected node(s) from branch #{id}", removed.len())),
+            Err(error) => {
+                self.delete_confirmation = None;
+                self.status = error;
+            }
+        }
+    }
+
+    fn delete_confirmation_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.delete_confirmation else { return; };
+        let branch = self.project.graph.dependent_branch(id).unwrap_or_default();
+        let mut close = false;
+        egui::Window::new("Delete connected branch?")
+            .id(egui::Id::new("gaia_delete_branch_confirm"))
+            .collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!("Node #{id} has downstream connections."));
+                ui.label(format!(
+                    "Deleting its branch will remove {} node(s), including their descendants.",
+                    branch.len()));
+                ui.colored_label(ui_theme::AMBER,
+                    "This is destructive. Use Undo to restore the entire graph branch.");
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() { close = true; }
+                    if ui.add(egui::Button::new("Delete branch")
+                        .fill(egui::Color32::from_rgb(112, 44, 48))).clicked()
+                    {
+                        self.confirm_branch_deletion(id);
+                        close = true;
+                    }
+                });
+            });
+        if close { self.delete_confirmation = None; }
     }
 
     fn undo_edit(&mut self) {
@@ -517,7 +629,12 @@ impl GaiaApp {
         let response = ui.add_sized([ui.available_width(), 34.0], button)
             .on_hover_text(detail);
         if response.clicked() {
-            self.add_node(kind);
+            if matches!(kind, NodeKind::ImportHeight { .. }) {
+                self.import_heightmap_dialog();
+            } else {
+                self.add_node(kind);
+            }
+            ui.close();
         }
     }
 
@@ -1125,8 +1242,8 @@ impl GaiaApp {
             }
             ui.add_space(12.0);
             if ui.add(egui::Button::new(
-                egui::RichText::new("Delete unused node").color(ui_theme::RED)
-            )).on_hover_text("Connected nodes cannot be removed until their wires are changed")
+                egui::RichText::new("Delete node…").color(ui_theme::RED)
+            )).on_hover_text("Reconnect a single-input node automatically, or confirm deleting its downstream branch")
                 .clicked()
             {
                 requested_delete = true;
@@ -1155,24 +1272,14 @@ impl GaiaApp {
             changed = true;
         }
         if requested_delete {
-            let id = self.selected;
-            match self.project.graph.remove(id) {
-                Ok(()) => {
-                    self.selected = self.project.graph.output;
-                    self.preview_source = PortRef::height(self.selected);
-                    self.wire_start = None;
-                    self.status = format!("Deleted unused node #{id}");
-                    changed = true;
-                }
-                Err(error) => self.status = error,
-            }
+            self.request_node_deletion(self.selected);
         }
         if changed {
             self.graph_dirty = true;
             self.unsaved = true;
         }
         ui.separator();
-        ui.label(egui::RichText::new("Drag from an output socket to a compatible input. Drag cards to rearrange.")
+        ui.label(egui::RichText::new("Wire outputs to same-type inputs. Delete bypasses compatible nodes or asks before removing dependent branches.")
             .size(12.0).color(ui_theme::MUTED));
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Connections are validated before rebuilding.")
@@ -1180,209 +1287,342 @@ impl GaiaApp {
     }
 
     fn graph_canvas(&mut self, ui: &mut egui::Ui) {
-        const WIDTH: f32 = 194.0;
-        const HEIGHT: f32 = 74.0;
-        const STEP: f32 = 17.0;
-        let extent = graph_canvas_extent(&self.project.graph.nodes, ui.available_width());
-        let (rect, _) = ui.allocate_exact_size(extent, egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0, ui_theme::CANVAS);
-
-        // Deliberately subtle grid: nodes and dataflow remain the focal point.
-        let grid = egui::Stroke::new(0.65, egui::Color32::from_rgb(29, 37, 43));
-        for x in 0..=(extent.x / 28.0) as usize {
-            let at = rect.left() + x as f32 * 28.0;
-            painter.line_segment(
-                [egui::pos2(at, rect.top()), egui::pos2(at, rect.bottom())], grid
-            );
+        // Fixed clipped viewport rather than a giant auto-growing scroll area.
+        // Node coordinates belong to the Project; pan/zoom are editor-only.
+        let size = ui.available_size().max(egui::vec2(160.0, 100.0));
+        let (rect, background) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let pointer_inside = pointer.is_some_and(|p| rect.contains(p));
+        let old_nodes = self.project.graph.nodes.clone();
+        if self.fit_graph_requested {
+            self.graph_view.fit_all(rect, &old_nodes);
+            self.fit_graph_requested = false;
+            self.focus_graph_selection = false;
         }
-        for y in 0..=(extent.y / 28.0) as usize {
-            let at = rect.top() + y as f32 * 28.0;
-            painter.line_segment(
-                [egui::pos2(rect.left(), at), egui::pos2(rect.right(), at)], grid
-            );
+        if self.focus_graph_selection {
+            if let Some(node) = old_nodes.iter().find(|n| n.id == self.selected) {
+                self.graph_view.focus_on(rect, node);
+            }
+            self.focus_graph_selection = false;
+        }
+        if self.graph_zoom_step != 1.0 {
+            self.graph_view.zoom_at(rect, rect.center(), self.graph_zoom_step);
+            self.graph_zoom_step = 1.0;
         }
 
-        let nodes = self.project.graph.nodes.clone();
-        for node in &nodes {
-            for (i, source) in node.inputs.iter().enumerate() {
-                if let Some(parent) = nodes.iter().find(|n| n.id == source.node) {
-                    let port_index = parent.kind.output_ports().iter()
-                        .position(|(name, _)| *name == source.port).unwrap_or(0);
-                    let start = rect.left_top() + egui::vec2(
-                        parent.position[0] + WIDTH, parent.position[1] + 29.0 + port_index as f32 * STEP
-                    );
-                    let end = rect.left_top() + egui::vec2(
-                        node.position[0], node.position[1] + 29.0 + i as f32 * 17.0
-                    );
-                    let mut points = Vec::with_capacity(21);
-                    for k in 0..=20 {
-                        let t = k as f32 / 20.0;
-                        let a = start;
-                        let b = start + egui::vec2(60.0, 0.0);
-                        let c = end - egui::vec2(60.0, 0.0);
-                        let d = end;
-                        let inv = 1.0 - t;
-                        points.push(egui::pos2(
-                            a.x * inv * inv * inv + 3.0 * b.x * inv * inv * t
-                                + 3.0 * c.x * inv * t * t + d.x * t * t * t,
-                            a.y * inv * inv * inv + 3.0 * b.y * inv * inv * t
-                                + 3.0 * c.y * inv * t * t + d.y * t * t * t,
-                        ));
-                    }
-                    painter.add(egui::Shape::line(
-                        points, egui::Stroke::new(2.0, node_accent(&parent.kind))
-                    ));
-                }
+        // Pan by dragging empty canvas or using the middle mouse button over
+        // anything. Holding Space while dragging also pans instead of moving
+        // a node. No navigation gesture modifies graph data or undo history.
+        let on_node = pointer.is_some_and(|p| old_nodes.iter()
+            .any(|n| self.graph_view.node_rect(rect, n).contains(p)));
+        let middle = ui.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
+        let space = ui.input(|i| i.key_down(egui::Key::Space));
+        if pointer_inside && (middle
+            || (space && ui.input(|i| i.pointer.primary_down()))
+            || (!on_node && background.dragged_by(egui::PointerButton::Primary)))
+            && self.wire_start.is_none()
+        {
+            self.graph_view.pan += ui.input(|i| i.pointer.delta());
+        }
+        if pointer_inside {
+            let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+            if wheel.abs() > 0.001 {
+                self.graph_view.zoom_at(rect, pointer.unwrap(),
+                    (wheel * 0.0016).exp());
+            }
+            // Pinch-to-zoom from a trackpad; do not apply twice for ordinary
+            // wheel events (which report a zoom delta of 1).
+            let pinch = ui.input(|i| i.zoom_delta());
+            if (pinch - 1.0).abs() > 0.001 {
+                self.graph_view.zoom_at(rect, pointer.unwrap(), pinch);
             }
         }
-        let mut requested_wire = None;
+
+        let view = self.graph_view;
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 5.0, ui_theme::CANVAS);
+        let grid = egui::Stroke::new(0.65, egui::Color32::from_rgb(29, 37, 43));
+        // Keep the overview grid sparse enough at large zoom-outs.
+        let step = (28.0 * view.zoom).max(18.0);
+        let offset_x = (view.pan.x.rem_euclid(step)).max(0.0);
+        let offset_y = (view.pan.y.rem_euclid(step)).max(0.0);
+        let mut x = rect.left() + offset_x;
+        while x <= rect.right() {
+            painter.line_segment([egui::pos2(x, rect.top()),
+                egui::pos2(x, rect.bottom())], grid);
+            x += step;
+        }
+        let mut y = rect.top() + offset_y;
+        while y <= rect.bottom() {
+            painter.line_segment([egui::pos2(rect.left(), y),
+                egui::pos2(rect.right(), y)], grid);
+            y += step;
+        }
+
+        // At an overview zoom, draw simplified colored node blocks rather
+        // than hundreds of unreadable 1-pixel wires and socket handles.
+        if view.zoom >= 0.38 {
+        // Draw existing connections behind every card. The cable color
+        // identifies the source type; routing uses smooth Bezier curves.
+        for node in &old_nodes {
+            for (slot, source) in node.inputs.iter().enumerate() {
+                let Some(parent) = old_nodes.iter().find(|n| n.id == source.node) else {
+                    continue;
+                };
+                let Some(index) = parent.kind.output_ports().iter()
+                    .position(|(name, _)| *name == source.port) else {
+                    continue;
+                };
+                let from = graph_socket(&view, rect, parent, true, index);
+                let to = graph_socket(&view, rect, node, false, slot);
+                let ty = parent.kind.output_ports()[index].1;
+                painter.add(egui::Shape::line(graph_wire_points(from, to, view.zoom),
+                    egui::Stroke::new((2.0 * view.zoom).clamp(1.0, 3.0),
+                        graph_port_color(ty))));
+            }
+        }
+
+        // Context menu on empty space, in addition to the always-visible
+        // Add Node control in the graph toolbar.
+        if !on_node {
+            background.context_menu(|ui| {
+                ui.label("Add a node to Gaia");
+                ui.set_width(230.0);
+                egui::ScrollArea::vertical().max_height(320.0)
+                    .show(ui, |ui| self.library(ui));
+            });
+        }
+
+        }
+        let mut pending_connection: Option<(u64, usize, PortRef)> = None;
         let mut requested_preview = None;
-        let released = ui.input(|i| i.pointer.any_released());
+        let mut requested_delete = None;
+        let mut wire_armed = false;
+        let released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+        let connecting_type = self.wire_start.as_ref().and_then(|source| {
+            old_nodes.iter().find(|n| n.id == source.node)
+                .and_then(|n| n.kind.output_ports().iter()
+                    .find(|(port, _)| *port == source.port))
+                .map(|(_, ty)| *ty)
+        });
+        let can_move = !space && !middle;
         for node in &mut self.project.graph.nodes {
-            let top_left = rect.left_top() + egui::vec2(node.position[0], node.position[1]);
-            let port_count = node.inputs.len().max(node.kind.output_ports().len()).max(1);
-            let node_height = HEIGHT.max(47.0 + port_count as f32 * STEP);
-            let node_rect = egui::Rect::from_min_size(top_left, egui::vec2(WIDTH, node_height));
-            let response = ui.interact(
-                node_rect, ui.scope_id().with(("node", node.id)),
-                egui::Sense::click_and_drag()
-            ).on_hover_text("Click to inspect · drag to move");
-            if response.clicked() {
+            let node_rect = view.node_rect(rect, node);
+            if view.zoom < 0.38 {
+                painter.rect_filled(node_rect.expand(1.0), 1.0,
+                    node_accent(&node.kind));
+                continue;
+            }
+            // Only the title bar drags nodes. A whole-card drag target
+            // competed with port handles, causing attempted cable drags to
+            // move cards instead of beginning a connection.
+            let response = ui.interact(node_rect,
+                ui.id().with(("node-select", node.id)), egui::Sense::click());
+            let title_rect = egui::Rect::from_min_size(node_rect.min,
+                egui::vec2(node_rect.width(), 42.0 * view.zoom));
+            let title_response = ui.interact(title_rect,
+                ui.id().with(("node-title", node.id)),
+                egui::Sense::click_and_drag())
+                .on_hover_text("Drag header to move · right-click for actions");
+            let node_id = node.id;
+            title_response.context_menu(|ui| {
+                ui.label(format!("{}  #{}", node.kind.label(), node_id));
+                if ui.button("Select node").clicked() {
+                    self.selected = node_id;
+                    if let Some((port, _)) = node.kind.output_ports().first() {
+                        requested_preview = Some(PortRef::new(node_id, *port));
+                    }
+                    ui.close();
+                }
+                if ui.button("Delete node…").clicked() {
+                    requested_delete = Some(node_id);
+                    ui.close();
+                }
+            });
+            if response.clicked() || title_response.clicked() {
                 self.selected = node.id;
                 if let Some((port, _)) = node.kind.output_ports().first() {
                     requested_preview = Some(PortRef::new(node.id, *port));
                 }
             }
-            if response.dragged() {
-                // drag_motion is the per-frame delta; drag_delta would compound.
-                let motion = response.drag_motion();
-                node.position[0] = (node.position[0] + motion.x).max(0.0);
-                node.position[1] = (node.position[1] + motion.y).max(0.0);
+            if title_response.dragged() && can_move {
+                let motion = title_response.drag_motion() / view.zoom;
+                node.position[0] += motion.x;
+                node.position[1] += motion.y;
                 self.selected = node.id;
                 self.unsaved = true;
             }
+
             let color = node_accent(&node.kind);
             let selected = self.selected == node.id;
-            let background = if selected {
+            let background_color = if selected {
                 egui::Color32::from_rgb(36, 56, 59)
-            } else if response.hovered() {
+            } else if response.hovered() || title_response.hovered() {
                 egui::Color32::from_rgb(41, 50, 59)
             } else {
                 ui_theme::PANEL_RAISED
             };
-            painter.rect_filled(node_rect, 9.0, background);
-            painter.rect_stroke(
-                node_rect, 9.0,
+            painter.rect_filled(node_rect, 9.0, background_color);
+            painter.rect_stroke(node_rect, 9.0,
                 egui::Stroke::new(if selected { 1.8 } else { 1.0 },
                     if selected { ui_theme::ACCENT } else { ui_theme::BORDER }),
-                egui::StrokeKind::Outside
-            );
+                egui::StrokeKind::Outside);
             painter.rect_filled(egui::Rect::from_min_max(
-                node_rect.left_top() + egui::vec2(0.0, 10.0),
-                node_rect.left_bottom() + egui::vec2(3.0, -10.0)
+                node_rect.left_top() + egui::vec2(0.0, 10.0 * view.zoom),
+                node_rect.left_bottom() + egui::vec2(3.0 * view.zoom, -10.0 * view.zoom)
             ), 2.0, color);
-            painter.text(node_rect.left_top() + egui::vec2(14.0, 11.0),
+            painter.text(node_rect.left_top() + egui::vec2(14.0, 10.0) * view.zoom,
                 egui::Align2::LEFT_TOP, node.kind.label(),
-                egui::FontId::proportional(15.0), ui_theme::TEXT);
-            painter.text(node_rect.left_top() + egui::vec2(14.0, 41.0),
-                egui::Align2::LEFT_TOP, format!("NODE #{:03}", node.id),
-                egui::FontId::monospace(10.0), ui_theme::MUTED);
+                egui::FontId::proportional((15.0 * view.zoom).max(8.0)), ui_theme::TEXT);
+            painter.text(node_rect.right_top() + egui::vec2(-10.0, 17.0) * view.zoom,
+                egui::Align2::RIGHT_CENTER, format!("#{:03}", node.id),
+                egui::FontId::monospace((10.0 * view.zoom).max(7.0)), ui_theme::MUTED);
+            painter.line_segment([
+                node_rect.left_top() + egui::vec2(10.0, 40.0) * view.zoom,
+                node_rect.right_top() + egui::vec2(-10.0, 40.0) * view.zoom
+            ], egui::Stroke::new(1.0, ui_theme::BORDER));
+
             for slot in 0..node.inputs.len() {
-                let center = node_rect.left_top() + egui::vec2(0.0, 29.0 + slot as f32 * STEP);
-                let socket = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
-                let response = ui.interact(
-                    socket, ui.scope_id().with(("input-socket", node.id, slot)),
-                    egui::Sense::hover()
-                ).on_hover_text(format!(
-                    "Input {} · {}",
-                    slot + 1,
-                    node.kind.input_type(slot).map(|ty| ty.label()).unwrap_or("?")
-                ));
-                let compatible = self.wire_start.as_ref().is_some_and(|source| {
-                    nodes.iter().find(|n| n.id == source.node)
-                        .and_then(|n| n.kind.output_ports().iter()
-                            .find(|(port, _)| *port == source.port))
-                        .is_some_and(|(_, ty)| Some(*ty) == node.kind.input_type(slot))
-                });
-                if released && response.hovered() {
-                    if let Some(source) = &self.wire_start {
-                        requested_wire = Some((node.id, slot, source.clone()));
-                    }
+                let center = graph_socket(&view, rect, node, false, slot);
+                let hit = egui::Rect::from_center_size(center,
+                    egui::Vec2::splat((PORT_STEP * view.zoom * 0.88).max(8.0)));
+                let hovered = pointer.is_some_and(|p| hit.contains(p) && rect.contains(p));
+                let kind = node.kind.input_type(slot).expect("existing input has a type");
+                let compatible = connecting_type == Some(kind)
+                    && self.wire_start.as_ref().is_some_and(|source| source.node != node.id);
+                let resp = ui.interact(hit, ui.id().with(("input", node.id, slot)),
+                    egui::Sense::click()).on_hover_text(format!(
+                    "Input {} · {} · drop matching output here", slot + 1, kind.label()));
+                if resp.clicked() && self.wire_start.is_some() {
+                    pending_connection = self.wire_start.as_ref()
+                        .map(|source| (node.id, slot, source.clone()));
                 }
-                painter.circle_filled(center,
-                    if compatible { 6.0 } else { 4.0 },
-                    if compatible { ui_theme::ACCENT } else { ui_theme::BLUE });
+                // Explicit pointer hit-testing is essential: drag capture on
+                // the source socket can make input Response.hovered() false.
+                if released && hovered && self.wire_start.is_some() {
+                    pending_connection = self.wire_start.as_ref()
+                        .map(|source| (node.id, slot, source.clone()));
+                }
+                painter.circle_filled(center, if hovered { 7.5 } else { 5.3 } * view.zoom,
+                    if compatible && hovered { ui_theme::ACCENT } else {
+                        graph_port_color(kind)
+                    });
+                if view.zoom >= 0.65 {
+                    painter.text(center + egui::vec2(12.0, 0.0) * view.zoom,
+                        egui::Align2::LEFT_CENTER,
+                        format!("{}  {}", slot + 1, kind.label()),
+                        egui::FontId::monospace((10.0 * view.zoom).max(8.0)),
+                        ui_theme::MUTED);
+                }
             }
             for (slot, (port, kind)) in node.kind.output_ports().iter().enumerate() {
-                let center = node_rect.left_top()
-                    + egui::vec2(WIDTH, 29.0 + slot as f32 * STEP);
-                let socket = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
-                let response = ui.interact(
-                    socket, ui.scope_id().with(("output-socket", node.id, slot)),
-                    egui::Sense::click_and_drag()
-                ).on_hover_text(format!("{} · {} · drag to connect", port, kind.label()));
+                let center = graph_socket(&view, rect, node, true, slot);
+                let hit = egui::Rect::from_center_size(center,
+                    egui::Vec2::splat((PORT_STEP * view.zoom * 0.88).max(8.0)));
+                let hovered = pointer.is_some_and(|p| hit.contains(p) && rect.contains(p));
+                let response = ui.interact(hit,
+                    ui.id().with(("output", node.id, slot)),
+                    egui::Sense::click_and_drag()).on_hover_text(format!(
+                    "Output {} · {} · click or drag to connect", port, kind.label()));
                 if response.drag_started() {
+                    self.selected = node.id;
                     self.wire_start = Some(PortRef::new(node.id, *port));
+                    self.wire_dragging = true;
+                    requested_preview = Some(PortRef::new(node.id, *port));
+                    wire_armed = true;
+                } else if response.clicked() {
+                    self.selected = node.id;
+                    self.wire_start = Some(PortRef::new(node.id, *port));
+                    self.wire_dragging = false;
+                    requested_preview = Some(PortRef::new(node.id, *port));
+                    wire_armed = true;
                 }
-                painter.circle_filled(center,
-                    if response.hovered() { 6.0 } else { 4.5 },
-                    if response.hovered() { ui_theme::TEXT } else { color });
+                painter.circle_filled(center, if hovered { 7.5 } else { 5.3 } * view.zoom,
+                    if hovered { ui_theme::TEXT } else { graph_port_color(*kind) });
+                if view.zoom >= 0.65 {
+                    painter.text(center - egui::vec2(12.0, 0.0) * view.zoom,
+                        egui::Align2::RIGHT_CENTER, *port,
+                        egui::FontId::monospace((10.0 * view.zoom).max(8.0)),
+                        ui_theme::TEXT);
+                }
             }
             if node.id == self.project.graph.output {
-                painter.text(node_rect.right_bottom() + egui::vec2(-10.0, -12.0),
+                painter.text(node_rect.right_bottom() + egui::vec2(-9.0, -6.0) * view.zoom,
                     egui::Align2::RIGHT_BOTTOM, "OUTPUT",
-                    egui::FontId::monospace(10.0), ui_theme::ACCENT);
+                    egui::FontId::monospace((9.0 * view.zoom).max(7.0)),
+                    ui_theme::ACCENT);
             }
         }
+
         if let Some(source) = &self.wire_start {
-            if let Some(parent) = nodes.iter().find(|n| n.id == source.node) {
-                if let Some(index) = parent.kind.output_ports().iter()
-                    .position(|(name, _)| *name == source.port)
+            if let Some(parent) = old_nodes.iter().find(|n| n.id == source.node) {
+                if let Some((index, (_, kind))) = parent.kind.output_ports().iter()
+                    .enumerate().find(|(_, (port, _))| *port == source.port)
                 {
-                    let from = rect.left_top() + egui::vec2(
-                        parent.position[0] + WIDTH,
-                        parent.position[1] + 29.0 + index as f32 * STEP
-                    );
-                    if let Some(to) = ui.input(|i| i.pointer.hover_pos()) {
-                        painter.line_segment(
-                            [from, to], egui::Stroke::new(2.5, ui_theme::ACCENT)
-                        );
+                    let from = graph_socket(&view, rect, parent, true, index);
+                    if let Some(pointer) = pointer {
+                        let mut target = pointer;
+                        for node in &old_nodes {
+                            for slot in 0..node.inputs.len() {
+                                let point = graph_socket(&view, rect, node, false, slot);
+                                if point.distance(pointer) <
+                                    (PORT_STEP * view.zoom * 0.44).max(4.0)
+                                    && node.kind.input_type(slot) == Some(*kind)
+                                    && node.id != source.node
+                                {
+                                    target = point;
+                                }
+                            }
+                        }
+                        painter.add(egui::Shape::line(
+                            graph_wire_points(from, target, view.zoom),
+                            egui::Stroke::new(2.5, ui_theme::ACCENT)));
                     }
                 }
             }
         }
-        // Selecting a graph card should inspect its actual output. Otherwise
-        // the inspector changes while the preview remains on an unrelated node.
+
         if let Some(preview) = requested_preview {
             if self.preview_source != preview {
                 self.preview_source = preview;
                 self.graph_dirty = true;
             }
         }
-        if self.focus_graph_selection {
-            if let Some(node) = self.project.graph.get(self.selected) {
-                let ports = node.inputs.len().max(node.kind.output_ports().len()).max(1);
-                let node_height = 74.0_f32.max(47.0 + ports as f32 * 17.0);
-                let card = egui::Rect::from_min_size(
-                    rect.left_top() + egui::vec2(node.position[0], node.position[1]),
-                    egui::vec2(194.0, node_height),
-                );
-                ui.scroll_to_rect(card, Some(egui::Align::Center));
-            }
-            self.focus_graph_selection = false;
-        }
-        if released {
-            self.wire_start = None;
-            if let Some((target, slot, source)) = requested_wire {
-                match self.project.graph.connect(target, slot, source) {
-                    Ok(()) => {
-                        self.graph_dirty = true;
-                        self.unsaved = true;
-                        self.status = "Graph connection updated".to_owned();
-                    }
-                    Err(error) => self.status = format!("Connection rejected: {error}"),
+        if let Some((target, slot, source)) = pending_connection {
+            match self.project.graph.connect(target, slot, source) {
+                Ok(()) => {
+                    self.graph_dirty = true;
+                    self.unsaved = true;
+                    self.status = format!("Connected input {} of node #{target}", slot + 1);
                 }
+                Err(error) => self.status = format!("Connection rejected: {error}"),
+            }
+            self.wire_start = None;
+            self.wire_dragging = false;
+        } else if released && !wire_armed && self.wire_dragging {
+            // Drag-to-connect is one gesture; dropping on empty space cancels.
+            // Click-to-connect remains armed for a later input click.
+            self.wire_start = None;
+            self.wire_dragging = false;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.wire_start = None;
+            self.wire_dragging = false;
+        }
+        if let Some(id) = requested_delete {
+            self.request_node_deletion(id);
+        }
+        if pointer_inside && !ui.ctx().egui_wants_keyboard_input() {
+            if ui.input(|i| i.key_pressed(egui::Key::F)) {
+                self.fit_graph_requested = true;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Home)) {
+                self.focus_graph_selection = true;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Delete)
+                || i.key_pressed(egui::Key::Backspace))
+            {
+                self.request_node_deletion(self.selected);
             }
         }
     }
@@ -1622,27 +1862,45 @@ impl eframe::App for GaiaApp {
                     ui.label(egui::RichText::new("GRAPH").size(12.0)
                         .strong().color(ui_theme::TEXT));
                     ui.label(egui::RichText::new(
-                        format!("{} NODES  ·  OUTPUT #{:03}",
-                            self.project.graph.nodes.len(), self.project.graph.output)
-                    ).monospace().size(10.0).color(ui_theme::MUTED));
+                        format!("{} nodes", self.project.graph.nodes.len()))
+                        .monospace().size(10.0).color(ui_theme::MUTED));
+                    ui.menu_button("+ Add node", |ui| {
+                        ui.set_width(240.0);
+                        egui::ScrollArea::vertical().max_height(360.0)
+                            .show(ui, |ui| self.library(ui));
+                    });
+                    if ui.button("Delete…").on_hover_text(
+                        "Delete selected node · Delete key. Reconnects compatible wires.")
+                        .clicked()
+                    {
+                        self.request_node_deletion(self.selected);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Find selected").on_hover_text(
-                            "Scroll to the selected graph node"
-                        ).clicked() {
+                        if ui.button("Fit all").on_hover_text("Frame every node · F").clicked() {
+                            self.fit_graph_requested = true;
+                        }
+                        if ui.button("Find").on_hover_text("Center selected node · Home").clicked() {
                             self.focus_graph_selection = true;
                         }
-                        ui.label(egui::RichText::new("Select · drag · connect ports")
-                            .size(11.0).color(ui_theme::MUTED));
+                        if ui.small_button("+").on_hover_text("Zoom in").clicked() {
+                            self.graph_zoom_step = 1.2;
+                        }
+                        ui.label(format!("{:.0}%", self.graph_view.zoom * 100.0));
+                        if ui.small_button("−").on_hover_text("Zoom out").clicked() {
+                            self.graph_zoom_step = 1.0 / 1.2;
+                        }
                     });
                 });
-                ui.add_space(8.0);
-                egui::ScrollArea::both().auto_shrink([false, false])
-                    .show(ui, |ui| self.graph_canvas(ui));
+                ui.label(egui::RichText::new(
+                    "Wheel: zoom  ·  drag empty canvas / middle button: pan  ·  drag or click sockets to wire  ·  right-click: actions"
+                ).size(10.0).color(ui_theme::MUTED));
+                self.graph_canvas(ui);
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(ui_theme::BG).inner_margin(12))
             .show(ui, |ui| self.viewport(ui));
 
+        self.delete_confirmation_dialog(&ctx);
         if !std::mem::take(&mut self.skip_history_record) {
             self.history.record_frame(
                 project_before_frame, &self.project,
@@ -1779,20 +2037,23 @@ mod file_drop_tests {
     }
 
     #[test]
-    fn graph_canvas_extends_to_last_node_and_dragged_positions() {
-        let mut project = Project::default();
-        for index in 0..30 {
-            project.graph.add(NodeKind::Noise {
-                seed: index, frequency: 3.0, amplitude: 0.2
-            });
-        }
-        let last = project.graph.nodes.last().unwrap();
-        let extent = graph_canvas_extent(&project.graph.nodes, 800.0);
-        assert!(extent.y >= last.position[1] + 74.0 + 80.0);
-        assert!(extent.y > 1000.0, "large graph must scroll vertically");
-        project.graph.nodes[0].position = [2500.0, 1800.0];
-        let extent = graph_canvas_extent(&project.graph.nodes, 800.0);
-        assert!(extent.x >= 2500.0 + 194.0 + 80.0);
-        assert!(extent.y >= 1800.0 + 74.0 + 80.0);
+    fn graph_socket_positions_and_curves_follow_zoom_without_mutating_nodes() {
+        let project = Project::default();
+        let node = &project.graph.nodes[0];
+        let viewport = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0), egui::vec2(700.0, 350.0));
+        let mut view = GraphView::default();
+        let before = node.position;
+        let input = graph_socket(&view, viewport, node, false, 0);
+        let output = graph_socket(&view, viewport, node, true, 0);
+        assert!((output.x - input.x - CARD_WIDTH).abs() < 1e-4);
+        let points = graph_wire_points(output, input, 1.0);
+        assert_eq!(points.first(), Some(&output));
+        assert!((points.last().unwrap().x - input.x).abs() < 1e-4);
+        view.zoom_at(viewport, viewport.center(), 0.5);
+        let zoomed = graph_socket(&view, viewport, node, true, 0);
+        assert_ne!(output, zoomed);
+        assert_eq!(before, node.position);
+        assert_ne!(graph_port_color(PortType::Height), graph_port_color(PortType::Mask));
     }
 }

@@ -300,6 +300,98 @@ impl Graph {
         Ok(())
     }
 
+    /// Delete a connected one-input operator by replacing its outgoing wires
+    /// with its own input. Reject changed types and mixed-output dependencies
+    /// instead of silently breaking graph connections. Edits are atomic.
+    pub fn remove_bypass(&mut self, id: u64) -> Result<(), String> {
+        let node = self.get(id).ok_or_else(|| format!("Missing node #{id}"))?;
+        let consumers: Vec<(u64, usize, PortRef)> = self.nodes.iter()
+            .filter(|other| other.id != id)
+            .flat_map(|other| other.inputs.iter().enumerate()
+                .filter(|(_, input)| input.node == id)
+                .map(|(slot, input)| (other.id, slot, input.clone())))
+            .collect();
+        if consumers.is_empty() {
+            return self.remove(id);
+        }
+        if node.inputs.len() != 1 {
+            return Err("Cannot bypass this node: it needs exactly one input. Use Delete downstream branch.".into());
+        }
+        let upstream = node.inputs[0].clone();
+        let source_type = self.get(upstream.node)
+            .and_then(|n| n.kind.output_ports().iter()
+                .find(|(port, _)| *port == upstream.port))
+            .map(|(_, ty)| *ty)
+            .ok_or("Cannot bypass node with invalid upstream socket")?;
+        let mut candidate = self.clone();
+        for (target, slot, outgoing) in consumers {
+            let outgoing_type = node.kind.output_ports().iter()
+                .find(|(port, _)| *port == outgoing.port)
+                .map(|(_, ty)| *ty);
+            if outgoing_type != Some(source_type) {
+                return Err(format!(
+                    "Cannot bypass node #{id}: output '{}' is not a {} field",
+                    outgoing.port, source_type.label()));
+            }
+            candidate.connect(target, slot, upstream.clone())?;
+        }
+        candidate.remove(id)?;
+        if self.output == id && source_type == crate::pipeline::PortType::Height
+            && upstream.port == "height" {
+            candidate.output = upstream.node;
+        }
+        *self = candidate;
+        Ok(())
+    }
+
+    /// All directly and transitively dependent nodes, including the target.
+    /// Sorted in current graph order so previews and confirmations are stable.
+    pub fn dependent_branch(&self, id: u64) -> Result<Vec<u64>, String> {
+        if self.get(id).is_none() {
+            return Err(format!("Missing node #{id}"));
+        }
+        let mut ids = std::collections::HashSet::from([id]);
+        loop {
+            let before = ids.len();
+            for node in &self.nodes {
+                if node.inputs.iter().any(|input| ids.contains(&input.node)) {
+                    ids.insert(node.id);
+                }
+            }
+            if ids.len() == before { break; }
+        }
+        Ok(self.nodes.iter().filter(|node| ids.contains(&node.id))
+            .map(|node| node.id).collect())
+    }
+
+    /// Explicit destructive operation; removes the selected node and every
+    /// downstream consumer. Never leaves dangling ports or an absent height
+    /// output. The caller should confirm this operation before invoking it.
+    pub fn remove_branch(&mut self, id: u64) -> Result<Vec<u64>, String> {
+        let removed = self.dependent_branch(id)?;
+        let ids: std::collections::HashSet<u64> = removed.iter().copied().collect();
+        let kept: Vec<Node> = self.nodes.iter()
+            .filter(|node| !ids.contains(&node.id)).cloned().collect();
+        let next_output = if ids.contains(&self.output) {
+            kept.iter().rev().find(|node| node.kind.output_ports().iter()
+                .any(|(port, ty)| *port == "height" &&
+                    *ty == crate::pipeline::PortType::Height))
+                .map(|node| node.id)
+                .ok_or("Cannot delete branch: it would remove every height source")?
+        } else {
+            self.output
+        };
+        self.nodes = kept;
+        self.output = next_output;
+        Ok(removed)
+    }
+
+    /// Visual card bounds for collision avoidance. Must track the editor's
+    /// graph_view card metrics (194 width; 65 + ports*22 height).
+    fn card_visual_height(node: &Node) -> f32 {
+        65.0 + node.inputs.len().max(node.kind.output_ports().len()).max(1) as f32 * 22.0
+    }
+
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         // An empty project graph can lack both masks and color fields. Invalid
         // placeholder ports like #output:wear poisoned evaluation immediately
@@ -329,6 +421,13 @@ impl Graph {
             });
         }
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+        // After downstream-branch deletion node #1 is not guaranteed to
+        // survive. Use an existing height node for multi-height fallback.
+        let fallback_height = self.nodes.iter().find(|node|
+            node.kind.output_ports().iter().any(|(port, ty)|
+                *port == "height" && *ty == crate::pipeline::PortType::Height))
+            .map(|node| PortRef::height(node.id))
+            .unwrap_or_else(|| PortRef::height(self.output));
         let inputs = if matches!(kind, NodeKind::MaskLevels { .. }) {
             let mask = self.nodes.iter().rev().find_map(|node| {
                 node.kind.output_ports().iter()
@@ -355,21 +454,21 @@ impl Graph {
             match kind.input_count() {
                 0 => vec![],
                 1 => vec![PortRef::height(self.output)],
-                2 => vec![PortRef::height(self.output), PortRef::height(1)],
+                2 => vec![PortRef::height(self.output), fallback_height.clone()],
                 3 => {
                     let mask = self.nodes.iter().rev().find_map(|node| {
                         node.kind.output_ports().iter()
                             .find(|(_, ty)| *ty == crate::pipeline::PortType::Mask)
                             .map(|(name, _)| PortRef::new(node.id, *name))
                     }).unwrap_or_else(|| PortRef::new(self.output, "wear"));
-                    vec![PortRef::height(self.output), PortRef::height(1), mask]
+                    vec![PortRef::height(self.output), fallback_height, mask]
                 }
                 _ => unreachable!("all node kinds have up to three inputs"),
             }
         };
         let position = [
             65.0 + (self.nodes.len() % 4) as f32 * 220.0,
-            205.0 + (self.nodes.len() / 4) as f32 * 115.0,
+            205.0 + (self.nodes.len() / 4) as f32 * 218.0,
         ];
         let has_height = kind.output_ports().iter()
             .any(|(name, _)| *name == "height");
@@ -403,12 +502,17 @@ impl Graph {
         }
         if let Some([x, y]) = source_position {
             let mut target = [x + 235.0, y];
-            // Avoid placing new cards directly on top of prior cards.
-            while self.nodes.iter().any(|node| node.id != id &&
-                (node.position[0] - target[0]).abs() < 205.0 &&
-                (node.position[1] - target[1]).abs() < 104.0
+            // Use actual card bounds, not a fixed 104px vertical gap:
+            // multi-output terrain nodes can be almost 200px tall.
+            let new_height = self.get(id).map(Self::card_visual_height)
+                .expect("new node exists");
+            while let Some(other) = self.nodes.iter().find(|node| node.id != id
+                && target[0] < node.position[0] + 209.0
+                && target[0] + 209.0 > node.position[0]
+                && target[1] < node.position[1] + Self::card_visual_height(node) + 15.0
+                && target[1] + new_height + 15.0 > node.position[1]
             ) {
-                target[1] += 112.0;
+                target[1] = other.position[1] + Self::card_visual_height(other) + 16.0;
             }
             if let Some(node) = self.nodes.iter_mut().find(|node| node.id == id) {
                 node.position = target;
@@ -809,6 +913,106 @@ mod tests {
         let mut invalid = field;
         invalid.values[0] = f32::NAN;
         assert!(export_obj(&invalid, &file).is_err());
+    }
+
+    #[test]
+    fn adding_blends_after_deleting_original_root_keeps_valid_input_ports() {
+        let mut graph = Project::default().graph;
+        let alternate = graph.add(NodeKind::Noise {
+            seed: 13, frequency: 5.0, amplitude: 0.3,
+        });
+        graph.remove_branch(1).unwrap();
+        assert!(graph.get(1).is_none());
+        assert_eq!(graph.output, alternate);
+        for kind in [
+            NodeKind::Blend { mix: 0.5 },
+            NodeKind::MaskedBlend { mix: 0.7 },
+        ] {
+            let id = graph.add(kind);
+            for source in &graph.get(id).unwrap().inputs {
+                assert!(graph.get(source.node).is_some(), "dangling new input: {:?}", source);
+            }
+            assert!(graph.evaluate_port(32, &PortRef::height(id)).is_ok());
+        }
+    }
+
+    #[test]
+    fn context_creation_avoids_tall_multioutput_card_overlap() {
+        let mut graph = Project::default().graph;
+        let first = graph.add_from(NodeKind::Sea {
+            level: 0.2, shore_width: 5, erosion: 0.1,
+        }, &PortRef::height(1));
+        let second = graph.add_from(NodeKind::Sea {
+            level: 0.3, shore_width: 6, erosion: 0.2,
+        }, &PortRef::height(1));
+        let a = graph.get(first).unwrap();
+        let b = graph.get(second).unwrap();
+        let dx = (a.position[0] - b.position[0]).abs();
+        let dy = (a.position[1] - b.position[1]).abs();
+        assert!(dx >= 209.0 || dy >= Graph::card_visual_height(a) + 15.0,
+            "new sea nodes overlap: {:?} / {:?}", a.position, b.position);
+    }
+
+    #[test]
+    fn delete_bypass_reconnects_chain_and_preserves_graph_evaluation() {
+        let mut graph = Project::default().graph;
+        let before = graph.nodes.len();
+        assert_eq!(graph.output, 3);
+        graph.remove_bypass(2).unwrap();
+        assert_eq!(graph.nodes.len(), before - 1);
+        assert_eq!(graph.get(3).unwrap().inputs[0], PortRef::height(1));
+        assert_eq!(graph.output, 3);
+        assert!(graph.evaluate(32).is_ok());
+        graph.remove_bypass(3).unwrap();
+        assert_eq!(graph.output, 1);
+        assert!(graph.evaluate(32).is_ok());
+    }
+
+    #[test]
+    fn delete_bypass_rejects_multisource_without_mutating_graph() {
+        let mut graph = Project::default().graph;
+        let blend = graph.add(NodeKind::Blend { mix: 0.5 });
+        let child = graph.add_from(NodeKind::Blur { radius: 2 }, &PortRef::height(blend));
+        let before = serde_json::to_string(&graph).unwrap();
+        assert!(graph.remove_bypass(blend).is_err());
+        assert_eq!(before, serde_json::to_string(&graph).unwrap());
+        assert_eq!(graph.get(child).unwrap().inputs[0], PortRef::height(blend));
+    }
+
+    #[test]
+    fn delete_branch_removes_transitive_dependents_and_repairs_output() {
+        let mut graph = Project::default().graph;
+        let unrelated = graph.add(NodeKind::Noise {
+            seed: 42, frequency: 4.0, amplitude: 0.3,
+        });
+        let removed = graph.remove_branch(2).unwrap();
+        assert!(removed.contains(&2) && removed.contains(&3));
+        assert!(!removed.contains(&1) && !removed.contains(&unrelated));
+        assert_eq!(graph.output, unrelated);
+        assert!(graph.evaluate(32).is_ok());
+        let snapshot = serde_json::to_string(&graph).unwrap();
+        assert!(graph.remove_branch(1).is_ok());
+        assert!(graph.remove_branch(unrelated).is_err(),
+            "last remaining height source cannot be deleted");
+        assert_ne!(snapshot, serde_json::to_string(&graph).unwrap());
+        assert_eq!(graph.output, unrelated);
+    }
+
+    #[test]
+    fn bypass_rejects_nonmatching_derived_port_and_branch_is_atomic() {
+        let mut graph = Project::default().graph;
+        let levels = graph.add(NodeKind::MaskLevels {
+            black: 0.0, white: 1.0, gamma: 1.0, invert: false,
+        });
+        let mask = graph.add_from(NodeKind::MaskLevels {
+            black: 0.1, white: 0.9, gamma: 1.0, invert: false,
+        }, &PortRef::new(levels, "mask"));
+        assert_eq!(graph.get(mask).unwrap().inputs[0], PortRef::new(levels, "mask"));
+        let child = graph.add_from(NodeKind::MaskLevels {
+            black: 0.0, white: 1.0, gamma: 1.0, invert: false,
+        }, &PortRef::new(mask, "mask"));
+        graph.remove_bypass(mask).unwrap();
+        assert_eq!(graph.get(child).unwrap().inputs[0], PortRef::new(levels, "mask"));
     }
 
     #[test]

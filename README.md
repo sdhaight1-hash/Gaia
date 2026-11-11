@@ -36,13 +36,23 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
   Curvature, AO, Sunlight, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Sea, Snow, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
-- Bottom graph: click/select and drag nodes; connect compatible named
-  output and input sockets directly. When adding a node, Gaia connects its
-  first compatible input to the selected output port and places it beside the
-  source (avoiding occupied cards). Mask-aware and Color-aware compositors
-  automatically create missing Slope or initial Colorize source nodes so new
-  graph nodes do not start with invalid placeholder input ports.
-  Unused nodes can be deleted in the right **Inspector**; nodes with dependents are protected.
+- Bottom graph: use **+ Add node** in the graph header, the left searchable
+  library or right-click empty canvas to create a node. New compatible nodes
+  connect to the selected output port automatically; cards avoid existing
+  nodes, including tall multi-output cards. Mask/Color compositors still
+  create valid missing prerequisites where necessary.
+  **Drag a node's header** to move it. Click or drag from a labeled colored
+  output socket onto an input of the same type to connect; Escape cancels
+  a pending cable. Incompatible types and cycles are rejected.
+  **Delete…**, the Inspector, node-header right-click or the Delete key can
+  delete a selected node. A single-input connected operator is safely bypassed
+  when its input matches all downstream output types; otherwise Gaia asks
+  before deleting its entire dependent branch. Undo restores deleted nodes.
+  Navigate with **wheel/pinch zoom**, **middle-mouse drag** or **drag empty
+  canvas to pan**. Use **Fit all** (F) to see the whole graph and
+  **Find** (Home) to center the selected node at a readable zoom;
+  the +/− buttons zoom around the viewport center. Graph navigation does
+  not alter serialized node positions.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
