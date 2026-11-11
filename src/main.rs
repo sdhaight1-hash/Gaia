@@ -304,6 +304,8 @@ impl GaiaApp {
         ui_theme::section(ui, "GENERATORS");
         self.palette_node(ui, "▲  Mountain", "Create a ridged mountain mass",
             NodeKind::Mountain { seed: 42, frequency: 4.0, height: 1.0 });
+        self.palette_node(ui, "◉  Island", "Shape a landmass with an ocean-level coastline",
+            NodeKind::Island { seed: 41, radius: 0.65, height: 1.0, roughness: 0.7 });
         self.palette_node(ui, "◈  Noise", "Layer smooth fractal noise",
             NodeKind::Noise { seed: 7, frequency: 6.0, amplitude: 0.4 });
         self.palette_node(ui, "⇧  Import Heightmap", "Read an 8- or 16-bit grayscale PNG",
@@ -503,6 +505,13 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
                     changed |= ui.add(egui::Slider::new(frequency, 0.2..=20.0).text("Frequency")).changed();
                     changed |= ui.add(egui::Slider::new(height, 0.0..=2.0).text("Height")).changed();
+                }
+                NodeKind::Island { seed, radius, height, roughness } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(radius, 0.15..=0.85).text("Island radius")).changed();
+                    changed |= ui.add(egui::Slider::new(height, 0.0..=2.0).text("Relief")).changed();
+                    changed |= ui.add(egui::Slider::new(roughness, 0.0..=1.0).text("Coast variation")).changed();
+                    ui.small("Flat ocean-level boundary; radial coastline with procedural interior relief.");
                 }
                 NodeKind::Noise { seed, frequency, amplitude } => {
                     changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
@@ -1064,7 +1073,7 @@ impl eframe::App for GaiaApp {
 
 fn node_accent(kind: &NodeKind) -> egui::Color32 {
     match kind {
-        NodeKind::Mountain { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
+        NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
