@@ -62,6 +62,47 @@ impl HydraulicFields {
     }
 }
 
+/// One donor's same-tick face transfers, in left/right/up/down order.
+/// The caller must apply each face as an equal debit and credit; the global
+/// solver's existing per-donor totals are preserved for numerical compatibility.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DirectedFlux {
+    pub water: [f32; 4],
+    pub sediment: [f32; 4],
+    pub total_water: f32,
+    pub total_sediment: f32,
+}
+
+/// Pure version of the original hydraulic donor calculation. All neighbor
+/// heads must come from the same committed snapshot, including across tiles.
+/// An outside-world neighbor has head zero for the current open-edge model.
+pub(crate) fn donor_fluxes(
+    volume: f32, sediment: f32, head: f32, neighbor_heads: [f32; 4],
+) -> DirectedFlux {
+    if volume <= 0.0 { return DirectedFlux::default(); }
+    let mut gradients = [0.0f32; 4];
+    let mut sum = 0.0f32;
+    for slot in 0..4 {
+        let gradient = (head - neighbor_heads[slot]).max(0.0);
+        gradients[slot] = gradient;
+        sum += gradient;
+    }
+    if sum <= 0.0 { return DirectedFlux::default(); }
+    let outgoing = (volume * 0.55).min(sum * 0.12);
+    if outgoing <= 0.0 { return DirectedFlux::default(); }
+    let carried = sediment.max(0.0) * (outgoing / volume);
+    let mut result = DirectedFlux {
+        total_water: outgoing, total_sediment: carried, ..DirectedFlux::default()
+    };
+    for slot in 0..4 {
+        if gradients[slot] <= 0.0 { continue; }
+        let ratio = gradients[slot] / sum;
+        result.water[slot] = outgoing * ratio;
+        result.sediment[slot] = carried * ratio;
+    }
+    result
+}
+
 /// Positive, bounded water movement over cardinal edges. Each directed transfer
 /// debits one cell, credits the next, and transports the same fraction of
 /// suspended sediment. Boundary sinks are tracked rather than disappearing.
@@ -117,38 +158,21 @@ pub fn simulate(
                     (x, y.wrapping_sub(1), y > 0),
                     (x, y + 1, y + 1 < n),
                 ];
-                // Assign each outgoing face a downward hydraulic gradient.
-                // Out-of-world neighbors have sea-level head = 0.
-                let mut gradients = [0.0f32; 4];
-                let mut sum = 0.0f32;
-                for (slot, (nx, ny, interior)) in neighbors.iter().copied().enumerate() {
-                    let downstream_head = if interior {
-                        let j = ny * n + nx;
-                        height.values[j] + old_water[j]
-                    } else {
-                        0.0
-                    };
-                    let gradient = (head - downstream_head).max(0.0);
-                    gradients[slot] = gradient;
-                    sum += gradient;
-                }
-                if sum <= 0.0 { continue; }
-                let outgoing = (volume * 0.55).min(sum * 0.12);
-                if outgoing <= 0.0 { continue; }
-                let available_sediment = old_sediment[i].max(0.0);
-                let sediment_fraction = outgoing / volume;
-                let carried = available_sediment * sediment_fraction;
+                let downstream_heads = neighbors.map(|(nx, ny, interior)| {
+                    if interior { height.values[ny * n + nx] + old_water[ny * n + nx] }
+                    else { 0.0 }
+                });
+                let flux = donor_fluxes(volume, old_sediment[i], head, downstream_heads);
+                if flux.total_water <= 0.0 { continue; }
 
-                delta_water[i] -= outgoing;
-                delta_sediment[i] -= carried;
-                transported[i] += outgoing;
-                flow.values[i] += outgoing;
+                delta_water[i] -= flux.total_water;
+                delta_sediment[i] -= flux.total_sediment;
+                transported[i] += flux.total_water;
+                flow.values[i] += flux.total_water;
                 for (slot, (nx, ny, interior)) in neighbors.iter().copied().enumerate() {
-                    let gradient = gradients[slot];
-                    if gradient <= 0.0 { continue; }
-                    let ratio = gradient / sum;
-                    let water_flux = outgoing * ratio;
-                    let sediment_flux = carried * ratio;
+                    let water_flux = flux.water[slot];
+                    if water_flux <= 0.0 { continue; }
+                    let sediment_flux = flux.sediment[slot];
                     if interior {
                         let j = ny * n + nx;
                         delta_water[j] += water_flux;
