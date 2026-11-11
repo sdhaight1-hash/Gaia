@@ -7,6 +7,7 @@ pub mod hydraulic_exchange;
 pub mod hydraulic_stream;
 pub mod hydraulic_checkpoint;
 pub mod hydraulic_tiles;
+pub mod hydraulic_build;
 pub mod geology;
 pub mod import;
 pub mod color;
