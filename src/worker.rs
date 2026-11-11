@@ -3,7 +3,7 @@ use crate::pipeline::{BlendCompute, GraphCache, PortRef, PortType};
 use crate::gpu_compute::GpuBlend;
 use crate::color::ColorField;
 use eframe::egui_wgpu::wgpu;
-use crate::terrain::{HeightField, Project};
+use crate::terrain::{HeightField, NodeKind, Project};
 use std::sync::{
     Arc, mpsc::{self, Receiver, Sender, TryRecvError},
     atomic::{AtomicU64, Ordering},
@@ -132,10 +132,17 @@ fn build(
         )?;
         (preview.data.clone(), preview, cache.stats.computed, cache.stats.reused)
     } else {
-        // Mask, Water and Color ports shade or inspect the global height mesh.
+        // A MaterialMasks node is classified from *its own input height*.
+        // Preview that same upstream terrain for the splat and mask ports:
+        // using the unrelated project output misaligns rock/snow coverage
+        // when the graph continues with erosion or other height modifiers.
+        let render_source = request.project.graph.get(request.preview.node)
+            .filter(|node| matches!(node.kind, NodeKind::MaterialMasks { .. }))
+            .and_then(|node| node.inputs.first())
+            .cloned()
+            .unwrap_or_else(|| PortRef::height(request.project.graph.output));
         let height = cache.evaluate_cancellable(
-            &request.project.graph, size,
-            &PortRef::height(request.project.graph.output),
+            &request.project.graph, size, &render_source,
             generation, request.generation,
         )?;
         let computed = cache.stats.computed;
@@ -221,6 +228,38 @@ mod tests {
         }, &generation).unwrap();
         assert_eq!(masked.preview_kind, PortType::Mask);
         assert_eq!(masked.height, project.graph.evaluate(32).unwrap());
+    }
+
+    #[test]
+    fn material_mask_preview_uses_its_input_height_not_unrelated_output() {
+        let mut project = Project::default();
+        project.resolution = 32;
+        let source_height = project.graph.evaluate_port(32, &PortRef::height(1))
+            .unwrap().data;
+        let final_height = project.graph.evaluate(32).unwrap();
+        assert_ne!(*source_height, final_height);
+        let node = project.graph.add_from(NodeKind::MaterialMasks {
+            sea_level: 0.25, beach_width: 0.08,
+            rock_slope: 0.32, rock_blend: 0.1,
+            snowline: 0.8, snow_blend: 0.12,
+        }, &PortRef::height(1));
+        assert_eq!(project.graph.output, 3);
+        let generation = AtomicU64::new(1);
+        let mut cache = GraphCache::default();
+        for name in ["splat", "rock"] {
+            let out = build(&mut cache, &Request {
+                generation: 1, project: project.clone(),
+                preview: PortRef::new(node, name),
+            }, &generation).unwrap();
+            assert_eq!(out.height, *source_height);
+            assert_ne!(out.height, final_height);
+            if name == "splat" {
+                assert_eq!(out.preview_kind, PortType::Splat);
+                assert_eq!(out.preview_color.as_ref().unwrap().pixels.len(), 1024);
+            } else {
+                assert_eq!(out.preview_kind, PortType::Mask);
+            }
+        }
     }
 
     #[test]
