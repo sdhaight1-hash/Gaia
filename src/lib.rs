@@ -11,3 +11,4 @@ pub mod tiles;
 pub mod adjust;
 pub mod normals;
 pub mod depression;
+pub mod rivers;
