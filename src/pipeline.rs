@@ -572,7 +572,7 @@ fn evaluate_kind(
                 .with("shore", PortType::Mask, fields.shore)
                 .with("beach", PortType::Mask, fields.beach)
         },
-        NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend } => {
+        NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend, .. } => {
             let field = classify_materials(take(0), *sea_level, *beach_width,
                 *rock_slope, *rock_blend, *snowline, *snow_blend, &cancelled)?;
             // Pack the same four normalized masks into one lossless-structure

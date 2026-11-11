@@ -24,6 +24,39 @@ impl HeightField {
     }
 }
 
+/// Editable dielectric material presets for four GPU-rendered surface layers.
+/// These values do not change the numerical classification masks.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MaterialPalette {
+    pub colors: [[f32; 3]; 4],
+    pub roughness: [f32; 4],
+}
+impl Default for MaterialPalette {
+    fn default() -> Self {
+        Self {
+            // R sand, G soil, B rock, A snow.
+            colors: [
+                [0.74, 0.63, 0.43],
+                [0.20, 0.34, 0.20],
+                [0.45, 0.46, 0.49],
+                [0.91, 0.94, 0.97],
+            ],
+            roughness: [0.88, 0.96, 0.68, 0.38],
+        }
+    }
+}
+impl MaterialPalette {
+    /// WGSL uniform array of vec4 (RGB + roughness), clamped for GPU safety.
+    pub fn gpu_layers(&self) -> [[f32; 4]; 4] {
+        std::array::from_fn(|i| [
+            self.colors[i][0].clamp(0.0, 1.0),
+            self.colors[i][1].clamp(0.0, 1.0),
+            self.colors[i][2].clamp(0.0, 1.0),
+            self.roughness[i].clamp(0.05, 1.0),
+        ])
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NodeKind {
     Mountain { seed: u32, frequency: f32, height: f32 },
@@ -40,7 +73,9 @@ pub enum NodeKind {
     Lake { fill_fraction: f32, minimum_area: u32, minimum_depth: f32 },
     Sea { level: f32, shore_width: u32, erosion: f32 },
     MaterialMasks { sea_level: f32, beach_width: f32,
-        rock_slope: f32, rock_blend: f32, snowline: f32, snow_blend: f32 },
+        rock_slope: f32, rock_blend: f32, snowline: f32, snow_blend: f32,
+        #[serde(default)]
+        palette: MaterialPalette },
     AmbientOcclusion { radius: u32, strength: f32 },
     Sunlight { azimuth: f32, elevation: f32, distance: u32 },
     Snow { seed: u32, snowline: f32, intensity: f32, melt: f32, adherence: f32, settle: u32 },
@@ -720,6 +755,25 @@ pub fn export_obj(field: &HeightField, path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_material_masks_acquire_editable_palette_and_serialize() {
+        let legacy = r#"{"MaterialMasks":{"sea_level":0.25,
+            "beach_width":0.08,"rock_slope":0.32,"rock_blend":0.10,
+            "snowline":0.8,"snow_blend":0.12}}"#;
+        let mut kind: NodeKind = serde_json::from_str(legacy).unwrap();
+        if let NodeKind::MaterialMasks { palette, .. } = &mut kind {
+            assert_eq!(*palette, MaterialPalette::default());
+            palette.colors[2] = [0.7, 0.2, 0.15];
+            palette.roughness[2] = 0.23;
+            assert_eq!(palette.gpu_layers()[2], [0.7, 0.2, 0.15, 0.23]);
+        } else { panic!("legacy material node lost"); }
+        let restored: NodeKind = serde_json::from_str(
+            &serde_json::to_string(&kind).unwrap()).unwrap();
+        if let NodeKind::MaterialMasks { palette, .. } = restored {
+            assert_eq!(palette.colors[2], [0.7, 0.2, 0.15]);
+            assert_eq!(palette.roughness[2], 0.23);
+        } else { panic!("roundtrip material node lost"); }
+    }
     use super::*;
 
     #[test]

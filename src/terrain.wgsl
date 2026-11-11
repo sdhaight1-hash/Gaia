@@ -3,6 +3,7 @@
 struct Camera {
     matrix: mat4x4<f32>,
     eye: vec4<f32>,
+    materials: array<vec4<f32>, 4>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
@@ -44,11 +45,13 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     if coverage > 0.0001 {
         let w = weights / coverage;
         // R sand / G soil / B rock / A snow.
-        albedo = vec3<f32>(0.74, 0.63, 0.43) * w.x
-            + vec3<f32>(0.20, 0.34, 0.20) * w.y
-            + vec3<f32>(0.45, 0.46, 0.49) * w.z
-            + vec3<f32>(0.91, 0.94, 0.97) * w.w;
-        roughness = dot(w, vec4<f32>(0.88, 0.96, 0.68, 0.38));
+        albedo = camera.materials[0].xyz * w.x
+            + camera.materials[1].xyz * w.y
+            + camera.materials[2].xyz * w.z
+            + camera.materials[3].xyz * w.w;
+        roughness = dot(w, vec4<f32>(
+            camera.materials[0].w, camera.materials[1].w,
+            camera.materials[2].w, camera.materials[3].w));
     }
     let n = normalize(input.normal);
     let v = normalize(camera.eye.xyz - input.world_position);

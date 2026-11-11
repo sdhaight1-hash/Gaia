@@ -10,6 +10,7 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
         sea_level: 0.25, beach_width: 0.08,
         rock_slope: 0.32, rock_blend: 0.10,
         snowline: 0.8, snow_blend: 0.12,
+        palette: Default::default(),
     }, &PortRef::height(1));
     let mut cache = GraphCache::default();
     let mut masks = Vec::new();

@@ -3,7 +3,7 @@ mod ui_theme;
 mod history;
 
 use eframe::egui;
-use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Node, Project};
+use gaia::terrain::{export_obj, export_png16, HeightField, MaterialPalette, NodeKind, Node, Project};
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
@@ -614,6 +614,7 @@ impl GaiaApp {
                 sea_level: 0.25, beach_width: 0.08,
                 rock_slope: 0.32, rock_blend: 0.10,
                 snowline: 0.80, snow_blend: 0.12,
+                palette: MaterialPalette::default(),
             });
         self.palette_node(ui, "N  Normals", "Derive a game-engine RGB normal map from terrain",
             NodeKind::Normals { strength: 1.0, flip_green: false });
@@ -931,7 +932,7 @@ impl GaiaApp {
                         }
                     }
                 }
-                NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend } => {
+                NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend, palette } => {
                     changed |= ui.add(egui::Slider::new(sea_level, 0.0..=1.0)
                         .text("Sea / sand level")).changed();
                     changed |= ui.add(egui::Slider::new(beach_width, 0.001..=0.5)
@@ -945,7 +946,17 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(snow_blend, 0.001..=0.5)
                         .text("Snow fade")).changed();
                     ui.small("Four normalized masks plus an RGBA splat map (R sand, G soil, B rock, A snow). Export as PNG16 layers or RGBA8 packed weights.");
-                    ui.small("Art-directed elevation/slope coverage; not climate or PBR shading.");
+                    ui.collapsing("Material appearance (3D PBR)", |ui| {
+                        for (i, name) in ["Sand", "Soil", "Rock", "Snow"].iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(*name);
+                                changed |= ui.color_edit_button_rgb(&mut palette.colors[i]).changed();
+                            });
+                            changed |= ui.add(egui::Slider::new(&mut palette.roughness[i], 0.05..=1.0)
+                                .text(format!("{name} roughness"))).changed();
+                        }
+                    });
+                    ui.small("Height/slope classifications stay unchanged when colors or roughness change.");
                 }
                 NodeKind::Normals { strength, flip_green } => {
                     changed |= ui.add(egui::Slider::new(strength, 0.0..=4.0)
@@ -1421,6 +1432,12 @@ impl GaiaApp {
                     camera: matrix,
                     eye: gpu::eye_position(self.yaw, self.pitch, self.distance)
                         .extend(1.0).to_array(),
+                    materials: self.project.graph.get(self.preview_source.node)
+                        .and_then(|node| match &node.kind {
+                            NodeKind::MaterialMasks { palette, .. } => Some(palette.gpu_layers()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| MaterialPalette::default().gpu_layers()),
                     pixels: [
                         (rect.width() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
                         (rect.height() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,

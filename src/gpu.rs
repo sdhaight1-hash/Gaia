@@ -27,6 +27,7 @@ struct Vertex {
 struct CameraUniform {
     matrix: [f32; 16],
     eye: [f32; 4],
+    materials: [[f32; 4]; 4],
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -232,6 +233,7 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye:
         label: Some("Gaia camera"),
         contents: bytemuck::bytes_of(&CameraUniform {
             matrix: [0.0; 16], eye: [0.0; 4],
+            materials: [[0.0; 4]; 4],
         }),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
     });
@@ -375,6 +377,7 @@ impl TerrainRenderResources {
 pub struct TerrainCallback {
     pub camera: [f32; 16],
     pub eye: [f32; 4],
+    pub materials: [[f32; 4]; 4],
     pub pixels: [u32; 2],
 }
 
@@ -391,6 +394,7 @@ impl egui_wgpu::CallbackTrait for TerrainCallback {
             queue.write_buffer(&state.uniform, 0, bytemuck::bytes_of(&CameraUniform {
                 matrix: self.camera,
                 eye: self.eye,
+                materials: self.materials,
             }));
             state.ensure_target(device, self.pixels);
             if let Some(target) = &state.offscreen {
@@ -532,7 +536,7 @@ mod tests {
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         ).validate(&module).expect("WGSL shader must validate");
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 80);
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 144);
         assert_eq!(std::mem::size_of::<Vertex>(), 52);
     }
 
