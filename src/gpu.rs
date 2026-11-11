@@ -29,6 +29,8 @@ struct CameraUniform {
     matrix: [f32; 16],
     eye: [f32; 4],
     materials: [[f32; 4]; 4],
+    lighting: [f32; 4],
+    detail: [f32; 4],
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
@@ -57,6 +59,16 @@ struct TerrainRenderResources {
     composite_sampler: wgpu::Sampler,
     format: wgpu::TextureFormat,
     offscreen: Option<Offscreen>,
+}
+
+/// 0°=north (+Z), 90°=east (+X); elevation is above the horizon.
+pub fn sun_uniform(azimuth: f32, elevation: f32, intensity: f32) -> [f32; 4] {
+    let az = azimuth.clamp(0.0, 360.0).to_radians();
+    let el = elevation.clamp(0.0, 90.0).to_radians();
+    [
+        el.cos() * az.sin(), el.sin(), el.cos() * az.cos(),
+        intensity.clamp(0.0, 4.0),
+    ]
 }
 
 pub fn eye_position(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
@@ -261,6 +273,7 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye:
         contents: bytemuck::bytes_of(&CameraUniform {
             matrix: [0.0; 16], eye: [0.0; 4],
             materials: [[0.0; 4]; 4],
+            lighting: [0.0; 4], detail: [0.0; 4],
         }),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
     });
@@ -461,6 +474,8 @@ pub struct TerrainCallback {
     pub camera: [f32; 16],
     pub eye: [f32; 4],
     pub materials: [[f32; 4]; 4],
+    pub lighting: [f32; 4],
+    pub detail: [f32; 4],
     pub pixels: [u32; 2],
 }
 
@@ -478,6 +493,8 @@ impl egui_wgpu::CallbackTrait for TerrainCallback {
                 matrix: self.camera,
                 eye: self.eye,
                 materials: self.materials,
+                lighting: self.lighting,
+                detail: self.detail,
             }));
             state.ensure_target(device, self.pixels);
             if let Some(target) = &state.offscreen {
@@ -620,8 +637,23 @@ mod tests {
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         ).validate(&module).expect("WGSL shader must validate");
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 144);
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 176);
         assert_eq!(std::mem::size_of::<Vertex>(), 52);
+    }
+
+    #[test]
+    fn sun_orientation_is_normalized_and_follows_compass_convention() {
+        let north = sun_uniform(0.0, 0.0, 2.0);
+        let east = sun_uniform(90.0, 0.0, 2.0);
+        let high = sun_uniform(135.0, 90.0, 2.0);
+        assert!(north[0].abs() < 1e-6 && (north[2] - 1.0).abs() < 1e-6);
+        assert!((east[0] - 1.0).abs() < 1e-6 && east[2].abs() < 1e-6);
+        assert!((high[1] - 1.0).abs() < 1e-6);
+        for dir in [north, east, high, sun_uniform(55.0, 60.0, 1.5)] {
+            let length = (dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]).sqrt();
+            assert!((length - 1.0).abs() < 1e-5);
+        }
+        assert_eq!(sun_uniform(0.0, 45.0, 12.0)[3], 4.0);
     }
 
     #[test]

@@ -5,6 +5,8 @@ struct Camera {
     matrix: mat4x4<f32>,
     eye: vec4<f32>,
     materials: array<vec4<f32>, 4>,
+    lighting: vec4<f32>,
+    detail: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var material_atlas: texture_2d_array<f32>;
@@ -42,7 +44,7 @@ fn fresnel_schlick(cos_theta: f32) -> vec3<f32> {
 // Explicit LOD allows per-fragment material selection without implicit
 // derivative-uniformity requirements; atlas has one level and 64x64 tiles.
 fn triplanar_detail(layer: i32, p: vec3<f32>, axis: vec3<f32>) -> vec4<f32> {
-    let uv = p * 7.5;
+    let uv = p * max(camera.detail.x, 1.0);
     let x = textureSampleLevel(material_atlas, material_sampler, uv.zy, layer, 0.0);
     let y = textureSampleLevel(material_atlas, material_sampler, uv.xz, layer, 0.0);
     let z = textureSampleLevel(material_atlas, material_sampler, uv.xy, layer, 0.0);
@@ -79,7 +81,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     }
     let n = normalize(input.normal);
     let v = normalize(camera.eye.xyz - input.world_position);
-    let l = normalize(vec3<f32>(0.5, 1.0, 0.36));
+    let l = normalize(camera.lighting.xyz);
     let h = normalize(v + l);
     let ndl = max(dot(n, l), 0.0);
     let ndv = max(dot(n, v), 0.001);
@@ -97,7 +99,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let specular = (d * gv * gl * f) / max(4.0 * ndv * ndl, 0.001);
     let diffuse = (vec3<f32>(1.0) - f) * albedo * (1.0 / 3.14159265);
     let ambient = albedo * 0.28;
-    let directional = (diffuse + specular) * ndl * 2.0;
+    let directional = (diffuse + specular) * ndl * camera.lighting.w;
     return vec4<f32>(clamp(ambient + directional,
         vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }

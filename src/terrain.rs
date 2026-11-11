@@ -24,12 +24,16 @@ impl HeightField {
     }
 }
 
+fn default_material_detail_scale() -> f32 { 7.5 }
+
 /// Editable dielectric material presets for four GPU-rendered surface layers.
 /// These values do not change the numerical classification masks.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MaterialPalette {
     pub colors: [[f32; 3]; 4],
     pub roughness: [f32; 4],
+    #[serde(default = "default_material_detail_scale")]
+    pub detail_scale: f32,
 }
 impl Default for MaterialPalette {
     fn default() -> Self {
@@ -42,6 +46,7 @@ impl Default for MaterialPalette {
                 [0.91, 0.94, 0.97],
             ],
             roughness: [0.88, 0.96, 0.68, 0.38],
+            detail_scale: default_material_detail_scale(),
         }
     }
 }
@@ -767,6 +772,11 @@ mod tests {
             palette.roughness[2] = 0.23;
             assert_eq!(palette.gpu_layers()[2], [0.7, 0.2, 0.15, 0.23]);
         } else { panic!("legacy material node lost"); }
+        // Older serialized palettes also lack per-material texture scale.
+        let mut palette_json = serde_json::to_value(MaterialPalette::default()).unwrap();
+        palette_json.as_object_mut().unwrap().remove("detail_scale");
+        let legacy_palette: MaterialPalette = serde_json::from_value(palette_json).unwrap();
+        assert_eq!(legacy_palette.detail_scale, 7.5);
         let restored: NodeKind = serde_json::from_str(
             &serde_json::to_string(&kind).unwrap()).unwrap();
         if let NodeKind::MaterialMasks { palette, .. } = restored {

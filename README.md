@@ -122,6 +122,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   is sampled with triplanar projection in the fragment shader, avoiding blank
   steep cliffs. It currently supplies neutral albedo/roughness variation;
   authored PBR texture assets, normal maps and IBL remain unimplemented.
+  The node's Texture repeats slider controls detail density in world space;
+  the viewport Lighting menu controls sun azimuth, elevation and intensity
+  independently of the graph's exported Sunlight mask.
 - Surface Material Masks node gives four mutually normalized coverage fields
   (sand, soil, rock, snow) from elevation and slope. Outputs can drive typed
   Color Mixers or independent PNG16 material-layer exports. The same node

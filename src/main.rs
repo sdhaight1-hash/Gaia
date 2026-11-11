@@ -92,6 +92,9 @@ struct GaiaApp {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    sun_azimuth: f32,
+    sun_elevation: f32,
+    sun_strength: f32,
     view_2d: bool,
     graph_dirty: bool,
     gpu_dirty: bool,
@@ -137,6 +140,9 @@ impl GaiaApp {
             yaw,
             pitch,
             distance,
+            sun_azimuth: 55.0,
+            sun_elevation: 60.0,
+            sun_strength: 2.0,
             view_2d: false,
             graph_dirty: false,
             gpu_dirty: false,
@@ -948,6 +954,8 @@ impl GaiaApp {
                         .text("Snow fade")).changed();
                     ui.small("Four normalized masks plus an RGBA splat map (R sand, G soil, B rock, A snow). Export as PNG16 layers or RGBA8 packed weights.");
                     ui.collapsing("Material appearance (3D PBR)", |ui| {
+                        changed |= ui.add(egui::Slider::new(&mut palette.detail_scale, 1.0..=24.0)
+                            .text("Texture repeats")).changed();
                         for (i, name) in ["Sand", "Soil", "Rock", "Snow"].iter().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(*name);
@@ -1391,6 +1399,21 @@ impl GaiaApp {
                     self.distance = 3.7;
                     self.gpu_dirty = true;
                 }
+                ui.menu_button("Lighting", |ui| {
+                    ui.label(egui::RichText::new("VIEWPORT LIGHT").strong());
+                    ui.add(egui::Slider::new(&mut self.sun_azimuth, 0.0..=360.0)
+                        .text("Azimuth °"));
+                    ui.add(egui::Slider::new(&mut self.sun_elevation, 5.0..=89.0)
+                        .text("Elevation °"));
+                    ui.add(egui::Slider::new(&mut self.sun_strength, 0.0..=4.0)
+                        .text("Sun intensity"));
+                    ui.small("0° North, 90° East. Preview controls only; no change to Sunlight graph masks.");
+                    if ui.button("Reset light").clicked() {
+                        self.sun_azimuth = 55.0;
+                        self.sun_elevation = 60.0;
+                        self.sun_strength = 2.0;
+                    }
+                });
             });
         });
         ui.add_space(9.0);
@@ -1439,6 +1462,18 @@ impl GaiaApp {
                             _ => None,
                         })
                         .unwrap_or_else(|| MaterialPalette::default().gpu_layers()),
+                    lighting: gpu::sun_uniform(
+                        self.sun_azimuth, self.sun_elevation, self.sun_strength),
+                    detail: [
+                        self.project.graph.get(self.preview_source.node)
+                            .and_then(|node| match &node.kind {
+                                NodeKind::MaterialMasks { palette, .. } =>
+                                    Some(palette.detail_scale.clamp(1.0, 24.0)),
+                                _ => None,
+                            })
+                            .unwrap_or(7.5),
+                        0.0, 0.0, 0.0,
+                    ],
                     pixels: [
                         (rect.width() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
                         (rect.height() * ui.ctx().pixels_per_point()).ceil().max(1.0) as u32,
