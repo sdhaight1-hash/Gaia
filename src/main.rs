@@ -210,6 +210,8 @@ impl GaiaApp {
             NodeKind::Mountain { seed: 42, frequency: 4.0, height: 1.0 });
         self.palette_node(ui, "◈  Noise", "Layer smooth fractal noise",
             NodeKind::Noise { seed: 7, frequency: 6.0, amplitude: 0.4 });
+        self.palette_node(ui, "⇧  Import Heightmap", "Read an 8- or 16-bit grayscale PNG",
+            NodeKind::ImportHeight { path: "heightmap.png".to_owned(), scale: 1.0 });
         self.palette_node(ui, "⛰  Range", "Warped mountain ridges and chains",
             NodeKind::Range { seed: 31, height: 1.0, roughness: 0.65 });
         self.palette_node(ui, "◎  Crater", "Impact bowl with elevated rim",
@@ -367,6 +369,13 @@ impl GaiaApp {
             }
             ui.add_space(10.0);
             match &mut node.kind {
+                NodeKind::ImportHeight { path, scale } => {
+                    ui.label("PNG heightmap path");
+                    changed |= ui.text_edit_singleline(path).changed();
+                    changed |= ui.add(egui::Slider::new(scale, 0.0..=8.0)
+                        .text("Height scale")).changed();
+                    ui.small("Supported: grayscale PNG8 or PNG16. File paths are relative to the working directory.");
+                }
                 NodeKind::Mountain { seed, frequency, height } => {
                     changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
                     changed |= ui.add(egui::Slider::new(frequency, 0.2..=20.0).text("Frequency")).changed();
@@ -849,7 +858,7 @@ impl eframe::App for GaiaApp {
 
 fn node_accent(kind: &NodeKind) -> egui::Color32 {
     match kind {
-        NodeKind::Mountain { .. } | NodeKind::Noise { .. } |
+        NodeKind::Mountain { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
