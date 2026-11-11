@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/stratify-geological-layers` (stacked on preceding PRs).
+Development branch: `feat/volcano-landform` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -29,7 +29,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 ## Current workflow
 
-- Left **Node Library**: Mountain, Island, Noise, Mountain Range, Crater, Dunes,
+- Left **Node Library**: Mountain, Island, Volcano, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Blur, Slope Mask,
   Curvature, Aspect Mask, Drainage, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Colorize and Color Mixer.
@@ -73,6 +73,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Conservative thermal talus relaxation with cumulative wear/deposit masks.
 - Mask Levels transforms typed masks through black/white points, gamma and inversion;
   output can drive masked terrain and color blending.
+- Volcano generator with adjustable cone radius, summit crater, bulk, surface breakup and center placement.
 - Stratify terrain operator for seeded, warped and tilted sedimentary-looking rock layers; preserves the input terrain silhouette rather than replacing it.
 - Island generator with seed-controlled shoreline roughness, interior relief,
   smooth coast gradient and ocean-level outer boundary.
