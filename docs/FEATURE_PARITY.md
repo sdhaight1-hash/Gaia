@@ -24,6 +24,17 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 Color/RGBA8 Splat PNG and OBJ with UVs and vertex normals, selected-port or all-node-ports cached full-grid headless CLI at up to 2048², seam-verified overlapping tile PNG export; independently evaluated region PNG16 Height/Mask/RGB Color outputs for local Mountain/Noise/Adjust(non-autolevel)/Blur/Blend/Slope/Curvature/Aspect/Elevation Mask/Mask Levels/Masked Blend/Colorize/Color Mixer/MaterialMasks (four masks, albedo, splat) at up to 8192² | Region evaluation for remaining local/global nodes (especially erosion/hydrology and normal maps), adaptive meshes, custom layered PBR material assets, layered materials, multi-node build selection, build profiles/job queue, PBR material textures and DCC/engine integrations |
 | Performance | Cancellable background builds, incremental full-grid cache, wgpu preview, 2K full-grid headless builds, first WGSL Blend compute kernel (>=256 samples), bounded-memory exact sample-region execution for a restricted typed Height/Mask/Color/Splat subgraph with derivative halos, mask composition and real RGB/RGBA material outputs (headless only) | True streamed tile/bucket graph evaluation beyond 2K, reduced cache memory footprint, GPU batched kernels and device numerical sign-off |
 
+## First integrated large-region hydraulic build
+
+The explicit `gaia-build --hydraulic-region NODE --no-obj --region-tiles N`
+mode connects an eligible graph Height source to the disk-backed, 2D-tile
+conservative hydraulic solver and exports all six PNG16 outputs. It requires a
+saved Hydraulic node and never silently falls back to full-world evaluation.
+Checkpoint output is opt-in. This is a **headless numerical workflow milestone**,
+not an interactive Gaea Erosion_2 clone. Output channels clip to 0..1 and there
+is no large-region GUI preview, arbitrary upstream graph support, physically
+coupled rivers/lakes, 4K/8K target-device benchmark, or interactive QA.
+
 ## Acceptance levels
 
 - **A — Compiled:** Rust code type-checks for both supported CI platforms.
