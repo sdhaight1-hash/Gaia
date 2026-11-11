@@ -10,6 +10,7 @@ use crate::rivers::carve_rivers;
 use crate::lakes::fill_lakes;
 use crate::snow::accumulate_snow;
 use crate::plates::plates;
+use crate::sea::coast;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -330,6 +331,14 @@ impl NodeKind {
             ("water", PortType::Water),
             ("coverage", PortType::Mask),
         ];
+        const SEA: &[(&str, PortType)] = &[
+            ("height", PortType::Height),
+            ("surface", PortType::Height),
+            ("water", PortType::Water),
+            ("wet", PortType::Mask),
+            ("shore", PortType::Mask),
+            ("beach", PortType::Mask),
+        ];
         const SNOW: &[(&str, PortType)] = &[
             ("height", PortType::Height),
             ("snow_depth", PortType::Height),
@@ -369,6 +378,7 @@ impl NodeKind {
             Self::DepressionFill { .. } => DEPRESSION,
             Self::Rivers { .. } => RIVERS,
             Self::Lake { .. } => LAKE,
+            Self::Sea { .. } => SEA,
             Self::Snow { .. } => SNOW,
             Self::Plates { .. } => PLATES,
             Self::MaskLevels { .. } => MASK_LEVELS,
@@ -390,7 +400,7 @@ impl NodeKind {
             (Self::Colorize { .. } | Self::Normals { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. } | Self::Snow { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. } | Self::Snow { .. } | Self::Sea { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -523,6 +533,16 @@ fn evaluate_kind(
                 .with("surface", PortType::Height, fields.surface)
                 .with("water", PortType::Water, fields.water)
                 .with("coverage", PortType::Mask, fields.coverage)
+        },
+        NodeKind::Sea { level, shore_width, erosion } => {
+            let fields = coast(take(0), *level, *shore_width, *erosion, &cancelled)?;
+            NodeOutputs::default()
+                .with("height", PortType::Height, fields.height)
+                .with("surface", PortType::Height, fields.surface)
+                .with("water", PortType::Water, fields.water)
+                .with("wet", PortType::Mask, fields.wet)
+                .with("shore", PortType::Mask, fields.shore)
+                .with("beach", PortType::Mask, fields.beach)
         },
         NodeKind::Snow { seed, snowline, intensity, melt, adherence, settle } => {
             let fields = accumulate_snow(take(0), *seed, *snowline,
