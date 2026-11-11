@@ -12,7 +12,7 @@ const HELP: &str = r#"Gaia headless terrain builder
 Usage: gaia-build --project FILE --output STEM [--resolution N] [--port NODE:PORT] [--no-obj] [--tiles COUNT]
        gaia-build --project FILE --output STEM --all-outputs NODE [--resolution N] [--no-obj] [--tiles COUNT]
        gaia-build --demo --output STEM [--resolution N] [--no-obj] [--tiles COUNT]
-       gaia-build --project FILE --output STEM --port NODE:height --no-obj --region-tiles COUNT [--resolution N]
+       gaia-build --project FILE --output STEM --port NODE:PORT --no-obj --region-tiles COUNT [--resolution N]
 
 Examples:
   gaia-build --project terrain.gaia.json --output builds/mountain
@@ -21,6 +21,7 @@ Examples:
   gaia-build --project terrain.gaia.json --output builds/land --tiles 4
   gaia-build --project terrain.gaia.json --output builds/erosion --all-outputs 2
   gaia-build --demo --port 1:height --output builds/mountain-regions --no-obj --region-tiles 4 --resolution 4096
+  gaia-build --project terrain.gaia.json --port 8:slope --output builds/slope-regions --no-obj --region-tiles 4
 
 Exports PNG16 for scalar fields, RGB8 for Color, RGBA8 for Splat weights,
 and OBJ for height outputs.
@@ -30,11 +31,12 @@ This subdivides an already-built field; it does not reduce graph build memory.
 --all-outputs NODE exports every named output of a node using one shared
 evaluation cache and writes STEM.batch.report.json. Do not combine with --port.
 Regular resolution must be 32–2048; --tiles COUNT 2–8 splits a FULL graph.
---region-tiles COUNT 2–64 instead evaluates Height output regions directly,
+--region-tiles COUNT 2–64 instead evaluates Height/Mask regions directly,
 up to 8192 resolution, with exact shared border samples and bounded working
 memory. This mode requires --no-obj, and does not output a stitched PNG/mesh.
-Supports only local Mountain, Noise, Adjust (autolevel OFF), Blur and Blend
-ancestors. Erosion, hydrology, autolevel and other global nodes are rejected
+Supports local Mountain, Noise, Adjust (autolevel OFF), Blur, Blend, Masked
+Blend, Slope, Curvature, Elevation Mask and Mask Levels ancestors.
+Erosion, hydrology, autolevel and other global nodes are rejected
 explicitly (never silently fall back to full-grid evaluation). Desktop
 previews remain at up to 512.
 "#;
@@ -139,10 +141,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
         if !no_obj {
             return Err("--region-tiles requires --no-obj (no full mesh or PNG is produced)".into());
         }
-        if selected.as_ref().is_some_and(|port| port.port != "height") {
-            return Err("--region-tiles currently supports only NODE:height".into());
-        }
-    } else if resolution.is_some_and(|size|
+     } else if resolution.is_some_and(|size|
         size > gaia::pipeline::MAX_BUILD_RESOLUTION)
     {
         return Err(format!("full-grid resolution cannot exceed {}",
@@ -297,7 +296,7 @@ fn build_all_outputs(
     Ok(())
 }
 
-/// Independent, world-coordinate Height regions. Each tile finishes and is
+/// Independent, world-coordinate typed scalar regions. Each tile finishes and is
 /// dropped before the next one is requested; no full-resolution heightfield
 /// and no full-grid evaluation cache are constructed.
 fn build_region_tiles(project: &Project, options: &Options,
@@ -308,6 +307,10 @@ fn build_region_tiles(project: &Project, options: &Options,
     // Preflight prior to creating directories/files: never silently allocate
     // a complete full-field fallback for a globally coupled operator.
     validate_region_graph(&project.graph, source)?;
+    let kind = project.graph.get(source.node)
+        .and_then(|node| node.kind.output_ports().iter()
+            .find(|(port, _)| *port == source.port).map(|(_, kind)| *kind))
+        .ok_or("Cannot resolve region output type")?;
     let directory = options.output.with_extension("region.tiles");
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let mut tiles = Vec::with_capacity(count * count);
@@ -322,6 +325,7 @@ fn build_region_tiles(project: &Project, options: &Options,
             let rect = layout.tile(tx, ty)?;
             let (tile, stats) = evaluate_region(
                 &project.graph, project.resolution, source, rect)?;
+            debug_assert_eq!(tile.kind, kind);
             peak_samples = peak_samples.max(stats.peak_working_samples);
             computed_regions += stats.computed_regions;
             // Neighbor tiles repeat exactly one border sample. Count it
@@ -354,6 +358,7 @@ fn build_region_tiles(project: &Project, options: &Options,
         "overlap_pixels": 1,
         "origin": "top-left, integer world samples",
         "node": source.node, "port": source.port,
+        "type": kind.label(),
         "format": "Grayscale16",
         "folder": directory.display().to_string(),
         "tiles": tiles,
@@ -365,7 +370,7 @@ fn build_region_tiles(project: &Project, options: &Options,
     std::fs::write(&report, serde_json::to_vec_pretty(&json!({
         "resolution": project.resolution,
         "node": source.node, "port": source.port,
-        "type": "Height", "format": "Grayscale16",
+        "type": kind.label(), "format": "Grayscale16",
         "min_raw": raw_min, "max_raw": raw_max,
         "mean_raw": raw_sum / unique_samples as f64,
         "unique_samples": unique_samples,
@@ -377,8 +382,9 @@ fn build_region_tiles(project: &Project, options: &Options,
         "obj": null,
         "duration_ms": started.elapsed().as_millis(),
     })).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    println!("Region-built {}² Height #{}:{} into {} tiles → {}",
-        project.resolution, source.node, source.port, count * count, directory.display());
+    println!("Region-built {}² {} #{}:{} into {} tiles → {}",
+        project.resolution, kind.label(), source.node, source.port,
+        count * count, directory.display());
     println!("Report: {}", report.display());
     Ok(())
 }
@@ -535,7 +541,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn region_cli_requires_explicit_local_height_and_disallows_full_grid_fallbacks() {
+    fn region_cli_requires_no_mesh_and_disallows_full_grid_fallbacks() {
         let args = |extra: &[&str]| {
             let mut a = vec!["--demo".to_string(), "--output".to_string(),
                 "terrain".to_string()];
@@ -552,8 +558,10 @@ mod tests {
         assert!(parse_args(args(&["--region-tiles", "65", "--no-obj"])).is_err());
         assert!(parse_args(args(&["--region-tiles", "2", "--no-obj",
             "--all-outputs", "1"])).is_err());
+        // Named masks are parsed, and their graph semantics are checked
+        // during preflight so Mask ports may legitimately be exported.
         assert!(parse_args(args(&["--region-tiles", "2", "--no-obj",
-            "--port", "2:wear"])).is_err());
+            "--port", "2:wear"])).is_ok());
     }
 
     #[test]
@@ -593,6 +601,66 @@ mod tests {
         for row in 0..ah {
             assert_eq!(&a[(row*aw+aw-1)*2..(row*aw+aw)*2],
                 &b[(row*bw)*2..(row*bw+1)*2]);
+        }
+    }
+
+    #[test]
+    fn region_cli_exports_a_named_mask_and_reports_its_real_type() {
+        use gaia::terrain::NodeKind;
+        let temp = tempfile::tempdir().unwrap();
+        let scene = temp.path().join("mask-project.gaia.json");
+        let stem = temp.path().join("mask-output");
+        let mut project = Project::default();
+        let noise = project.graph.add(NodeKind::Noise {
+            seed: 31, frequency: 7.8, amplitude: 0.75,
+        });
+        let slope = project.graph.add(NodeKind::Slope);
+        project.graph.connect(slope, 0, PortRef::height(noise)).unwrap();
+        project.resolution = 65;
+        project.save(&scene).unwrap();
+        let source = PortRef::new(slope, "slope");
+        let opts = parse_args(vec![
+            "--project".into(), scene.to_string_lossy().into_owned(),
+            "--output".into(), stem.to_string_lossy().into_owned(),
+            "--port".into(), format!("{slope}:slope"),
+            "--region-tiles".into(), "3".into(), "--no-obj".into(),
+        ]).unwrap().unwrap();
+        build(opts).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("region.tiles.json")).unwrap()).unwrap();
+        assert_eq!(manifest["type"], "Mask");
+        assert_eq!(manifest["port"], "slope");
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("region.report.json")).unwrap()).unwrap();
+        assert_eq!(report["type"], "Mask");
+        assert_eq!(report["unique_samples"], 65 * 65);
+        let expected = project.graph.evaluate_port(65, &source).unwrap();
+        let folder = stem.with_extension("region.tiles");
+        let read = |x: usize, y: usize| {
+            let path = folder.join(format!("x{x:02}_y{y:02}.png"));
+            let mut png = png::Decoder::new(std::io::BufReader::new(
+                std::fs::File::open(path).unwrap())).read_info().unwrap();
+            let mut bytes = vec![0_u8; png.output_buffer_size()];
+            let info = png.next_frame(&mut bytes).unwrap();
+            assert_eq!(info.color_type, png::ColorType::Grayscale);
+            assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+            (info.width as usize, info.height as usize, bytes)
+        };
+        let (aw, ah, a) = read(0, 0);
+        let (bw, bh, b) = read(1, 0);
+        assert_eq!(ah, bh);
+        for row in 0..ah {
+            assert_eq!(&a[(row * aw + aw-1)*2..(row * aw + aw)*2],
+                &b[(row * bw)*2..(row * bw + 1)*2]);
+        }
+        let rect = gaia::region::RegionLayout::new(65, 3).unwrap().tile(0, 0).unwrap();
+        for y in 0..ah {
+            for x in 0..aw {
+                let value = expected.data.get(rect.x + x, rect.y + y);
+                let encoded = (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                let at = 2 * (y * aw + x);
+                assert_eq!(u16::from_be_bytes([a[at], a[at + 1]]), encoded);
+            }
         }
     }
 
