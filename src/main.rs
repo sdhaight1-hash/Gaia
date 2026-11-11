@@ -333,6 +333,7 @@ impl GaiaApp {
         let mut changed = false;
         let mut set_output = false;
         let mut requested_connection: Option<(u64, usize, PortRef)> = None;
+        let mut requested_delete = false;
         if let Some(node) = self.project.graph.nodes.iter_mut().find(|n| n.id == self.selected) {
             ui.label(egui::RichText::new(node.kind.label()).size(18.0)
                 .strong().color(ui_theme::ACCENT));
@@ -455,6 +456,14 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(amount, 0.0..=0.25).text("Strength")).changed();
                 }
             }
+            ui.add_space(12.0);
+            if ui.add(egui::Button::new(
+                egui::RichText::new("Delete unused node").color(ui_theme::RED)
+            )).on_hover_text("Connected nodes cannot be removed until their wires are changed")
+                .clicked()
+            {
+                requested_delete = true;
+            }
         } else {
             ui.label("Click a node in the graph to edit it.");
         }
@@ -468,6 +477,19 @@ impl GaiaApp {
             self.project.graph.output = self.selected;
             self.preview_source = PortRef::height(self.selected);
             changed = true;
+        }
+        if requested_delete {
+            let id = self.selected;
+            match self.project.graph.remove(id) {
+                Ok(()) => {
+                    self.selected = self.project.graph.output;
+                    self.preview_source = PortRef::height(self.selected);
+                    self.wire_start = None;
+                    self.status = format!("Deleted unused node #{id}");
+                    changed = true;
+                }
+                Err(error) => self.status = error,
+            }
         }
         if changed {
             self.graph_dirty = true;
