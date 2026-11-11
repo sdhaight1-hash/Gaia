@@ -49,7 +49,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   when its input matches all downstream output types; otherwise Gaia asks
   before deleting its entire dependent branch. Undo restores deleted nodes.
   Navigate with **wheel/pinch zoom**, **middle-mouse drag** or **drag empty
-  canvas to pan**. Use **Fit all** (F) and **Find** (Home) in the graph header;
+  canvas to pan**. Use **Fit all** (F) to see the whole graph and
+  **Find** (Home) to center the selected node at a readable zoom;
   the +/− buttons zoom around the viewport center. Graph navigation does
   not alter serialized node positions.
 - Right inspector: change procedural parameters and graph resolution

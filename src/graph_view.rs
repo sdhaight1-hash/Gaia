@@ -57,6 +57,12 @@ impl GraphView {
         self.pan = viewport.size() * 0.5 - world_center.to_vec2() * self.zoom;
     }
 
+    /// Center a node at a usable editing zoom, even after a tiny Fit-all view.
+    pub fn focus_on(&mut self, viewport: Rect, node: &Node) {
+        self.zoom = self.zoom.max(0.90);
+        self.center_on(viewport, node);
+    }
+
     pub fn fit_all(&mut self, viewport: Rect, nodes: &[Node]) {
         if nodes.is_empty() {
             *self = Self::default();
@@ -116,7 +122,9 @@ mod tests {
         for node in nodes {
             assert!(view.node_rect(viewport, node).intersects(viewport));
         }
-        view.center_on(viewport, &nodes[0]);
+        view.zoom = 0.08;
+        view.focus_on(viewport, &nodes[0]);
+        assert!(view.zoom >= 0.90, "Find selected should zoom out of miniature overview");
         assert!((view.node_rect(viewport, &nodes[0]).center()
             - viewport.center()).length() < 1e-4);
         assert_eq!(nodes.iter().map(|n| n.position).collect::<Vec<_>>(), before);

@@ -1301,7 +1301,7 @@ impl GaiaApp {
         }
         if self.focus_graph_selection {
             if let Some(node) = old_nodes.iter().find(|n| n.id == self.selected) {
-                self.graph_view.center_on(rect, node);
+                self.graph_view.focus_on(rect, node);
             }
             self.focus_graph_selection = false;
         }
