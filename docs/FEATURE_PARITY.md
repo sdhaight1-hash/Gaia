@@ -1,6 +1,6 @@
 # Gaia ↔ Gaea 2.3 functional parity ledger
 
-**Updated: 2026-11-10.** Target is the documented workflow of QuadSpinner
+**Updated: 2026-11-11.** Target is the documented workflow of QuadSpinner
 Gaea 2.3, implemented independently in Rust and wgpu. Gaea's proprietary
 code/assets/algorithms are not part of Gaia.
 
@@ -21,8 +21,8 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Color/materials | RGBA Color fields, editable altitude palettes, four-layer material coverage masks, typed RGBA8 splat map (sand/soil/rock/snow) and baked RGB8 base-albedo output with 4-layer GGX dielectric wgpu shading (editable serialized albedo/roughness/detail scale, triplanar texture atlas and adjustable viewport sun), typed Color Mixer, AO/terrain-cast Sunlight masks, RGB normals with strength and green-axis flip, 2D/3D vertex-color preview, RGB8 export | External authored PBR texture assets, detail/LOD normal maps and tangent-space mesh integration |
 | Snow, ice, vegetation | Independent Snow node: snowline/seed/slope adhesion, snowfall/melt and mass-conserving downhill settling; height/depth/coverage outputs | Particle snow, cascading snowfield, glaciers and ice dynamics, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace with group selection/dragging, marquee and bulk delete, input cable replacement menus, graph pan/zoom/fit/framing, direct add/delete controls and context menus, 2D maps, depth-tested wgpu 3D mesh preview that follows selected Height ports with continuous slope/elevation palette and optional four-layer GGX splat shading, draggable socket wires, property inspector, native Open/Save As/Import PNG dialogs and export menu | Per-node thumbnails, analysis overlays, painting tools, persisted workspaces, visual QA |
-| Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 Color/RGBA8 Splat PNG and OBJ with UVs and vertex normals, selected-port or all-node-ports cached headless CLI at up to 2048², seam-verified overlapping tile PNG export with manifest | Truly tiled/region graph execution, adaptive meshes, layered materials, multi-node build selection, build profiles/job queue, PBR material textures and DCC/engine integrations |
-| Performance | Cancellable background builds, incremental cache, wgpu preview, 2K full-grid headless builds, first WGSL Blend compute kernel (>=256 samples) | True streamed tile/bucket graph evaluation beyond 2K, reduced cache memory footprint, GPU batched kernels and device numerical sign-off |
+| Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 Color/RGBA8 Splat PNG and OBJ with UVs and vertex normals, selected-port or all-node-ports cached full-grid headless CLI at up to 2048², seam-verified overlapping tile PNG export; independently evaluated region PNG16 output for local Mountain/Noise/Adjust(non-autolevel)/Blur/Blend graphs at up to 8192² | Region evaluation for global erosion/hydrology and color nodes, adaptive meshes, layered materials, multi-node build selection, build profiles/job queue, PBR material textures and DCC/engine integrations |
+| Performance | Cancellable background builds, incremental full-grid cache, wgpu preview, 2K full-grid headless builds, first WGSL Blend compute kernel (>=256 samples), bounded-memory exact sample-region execution for a restricted Height subgraph (headless only) | True streamed tile/bucket graph evaluation beyond 2K, reduced cache memory footprint, GPU batched kernels and device numerical sign-off |
 
 ## Acceptance levels
 

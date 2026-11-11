@@ -685,7 +685,8 @@ mod tests {
         assert!(delta.dot(facing).abs() < 1.0e-5,
             "panning must not dolly toward the terrain");
         let target = DEFAULT_CAMERA_TARGET + delta;
-        assert!((eye_position(yaw, pitch, 3.7, target) - target).length() - 3.7 < 1.0e-5);
+        assert!(((eye_position(yaw, pitch, 3.7, target) - target).length() - 3.7).abs()
+            < 1.0e-5);
         assert_eq!(pan_delta(yaw, pitch, 3.7, 720.0, [0.0, 0.0]), Vec3::ZERO);
     }
 
