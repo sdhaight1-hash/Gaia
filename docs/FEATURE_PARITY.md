@@ -35,6 +35,19 @@ not an interactive Gaea Erosion_2 clone. Output channels clip to 0..1 and there
 is no large-region GUI preview, arbitrary upstream graph support, physically
 coupled rivers/lakes, 4K/8K target-device benchmark, or interactive QA.
 
+## Desktop access to bounded-memory hydraulic export
+
+Selecting a Hydraulic graph node now exposes **Export → Hydraulic region
+build…**, with resolution, tile count, boundary, output stem and checkpoint
+options. The actual build is asynchronous and operates on a frozen in-memory
+project snapshot so users can keep editing. This shares the validated
+`build_hydraulic_regions` implementation with the headless CLI.
+
+This is not interactive 4K/8K erosion preview: only the completed PNG maps
+can be consumed externally; the desktop viewport still uses the original
+full-grid preview solver. Windows target hardware UI usability and long-run
+performance must be physically verified before claiming parity.
+
 ## Acceptance levels
 
 - **A — Compiled:** Rust code type-checks for both supported CI platforms.
