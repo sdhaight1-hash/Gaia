@@ -21,7 +21,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Color/materials | RGBA Color fields, editable altitude palettes, typed Color Mixer, independently derived RGB normal maps with strength and green-axis flip, 2D/3D vertex-color preview, RGB8 export | PBR material model, multilayer textures, splat maps, detail/LOD normal maps and tangent-space mesh integration |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview with continuous slope/elevation palette, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
-| Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 color PNG/OBJ export, selected-port headless CLI, seam-verified overlapping tile PNG export with manifest | Truly tiled/region graph execution, adaptive meshes, layered materials, build profiles, job queue and DCC/engine integrations |
+| Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 color PNG/OBJ with UVs and vertex normals, selected-port headless CLI, seam-verified overlapping tile PNG export with manifest | Truly tiled/region graph execution, adaptive meshes, layered materials, build profiles, job queue and DCC/engine integrations |
 | Performance | Cancellable background builds, incremental cache, wgpu preview, first WGSL Blend compute kernel (>=256 samples) | CPU/GPU performance profiling, broader compute kernels, GPU batched graph execution, tiling, memory budgets, GPU numerical sign-off |
 
 ## Acceptance levels
