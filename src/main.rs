@@ -22,7 +22,8 @@ fn classify_drop(path: &Path) -> DroppedDocument {
         .unwrap_or_default();
     if filename.to_ascii_lowercase().ends_with(".gaia.json") {
         DroppedDocument::Project
-    } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+    } else if path.extension().and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
         DroppedDocument::Heightmap
     } else {
         DroppedDocument::Unsupported
