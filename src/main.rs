@@ -444,7 +444,7 @@ impl GaiaApp {
             | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. }
             | NodeKind::MaskLevels { .. } | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. }
             | NodeKind::Normals { .. } | NodeKind::AmbientOcclusion { .. }
-            | NodeKind::Sunlight { .. });
+            | NodeKind::Sunlight { .. } | NodeKind::MaterialMasks { .. });
         let source = self.preview_source.clone();
         self.selected = self.project.graph.add_from(kind, &source);
         self.focus_graph_selection = true;
@@ -583,6 +583,13 @@ impl GaiaApp {
             NodeKind::MaskedBlend { mix: 1.0 });
         ui.add_space(16.0);
         ui_theme::section(ui, "SURFACE COLOR");
+        self.palette_node(ui, "◫  Material Masks",
+            "Normalized sand, soil, rock and snow coverage from elevation/slope",
+            NodeKind::MaterialMasks {
+                sea_level: 0.25, beach_width: 0.08,
+                rock_slope: 0.32, rock_blend: 0.10,
+                snowline: 0.80, snow_blend: 0.12,
+            });
         self.palette_node(ui, "N  Normals", "Derive a game-engine RGB normal map from terrain",
             NodeKind::Normals { strength: 1.0, flip_green: false });
         self.palette_node(ui, "◉  Colorize", "Map low and high elevations to true RGBA colors",
@@ -898,6 +905,22 @@ impl GaiaApp {
                             requested_secondary_color = true;
                         }
                     }
+                }
+                NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend } => {
+                    changed |= ui.add(egui::Slider::new(sea_level, 0.0..=1.0)
+                        .text("Sea / sand level")).changed();
+                    changed |= ui.add(egui::Slider::new(beach_width, 0.001..=0.5)
+                        .text("Beach fade")).changed();
+                    changed |= ui.add(egui::Slider::new(rock_slope, 0.0..=1.0)
+                        .text("Rock slope")).changed();
+                    changed |= ui.add(egui::Slider::new(rock_blend, 0.001..=0.5)
+                        .text("Rock fade")).changed();
+                    changed |= ui.add(egui::Slider::new(snowline, 0.0..=2.0)
+                        .text("Snowline")).changed();
+                    changed |= ui.add(egui::Slider::new(snow_blend, 0.001..=0.5)
+                        .text("Snow fade")).changed();
+                    ui.small("Four normalized masks for Color Mixer or --all-outputs PNG16 export.");
+                    ui.small("Art-directed elevation/slope coverage; not climate or PBR shading.");
                 }
                 NodeKind::Normals { strength, flip_green } => {
                     changed |= ui.add(egui::Slider::new(strength, 0.0..=4.0)
@@ -1539,7 +1562,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::Equalize { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Sea { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
-        NodeKind::Slope | NodeKind::Curvature | NodeKind::AmbientOcclusion { .. } | NodeKind::Sunlight { .. } | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::MaterialMasks { .. } | NodeKind::AmbientOcclusion { .. } | NodeKind::Sunlight { .. } | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
 }
 

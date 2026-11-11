@@ -112,6 +112,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   prevent new terminal pits. Outputs carved Height, channels Mask and normalized
   wear Mask. This first version does not model rain discharge, water surface,
   sediment mass conservation or art-directable headwater masks.
+- Surface Material Masks node gives four mutually normalized coverage fields
+  (sand, soil, rock, snow) from elevation and slope. Outputs can drive typed
+  Color Mixers or independent PNG16 material-layer exports.
 - Derived AO and Sunlight maps: eight-direction horizon occlusion and
   directional diffuse light with terrain self-shadow, both typed Mask outputs
   for color blending or PNG16 export. This is deterministic CPU raster

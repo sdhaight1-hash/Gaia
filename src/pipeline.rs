@@ -12,6 +12,7 @@ use crate::snow::accumulate_snow;
 use crate::plates::plates;
 use crate::sea::coast;
 use crate::lighting::{ambient_occlusion, sunlight};
+use crate::materials::classify_materials;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -340,6 +341,10 @@ impl NodeKind {
             ("shore", PortType::Mask),
             ("beach", PortType::Mask),
         ];
+        const MATERIALS: &[(&str, PortType)] = &[
+            ("sand", PortType::Mask), ("soil", PortType::Mask),
+            ("rock", PortType::Mask), ("snow", PortType::Mask),
+        ];
         const AO: &[(&str, PortType)] = &[("ao", PortType::Mask)];
         const SUNLIGHT: &[(&str, PortType)] = &[("light", PortType::Mask)];
         const SNOW: &[(&str, PortType)] = &[
@@ -382,6 +387,7 @@ impl NodeKind {
             Self::Rivers { .. } => RIVERS,
             Self::Lake { .. } => LAKE,
             Self::Sea { .. } => SEA,
+            Self::MaterialMasks { .. } => MATERIALS,
             Self::AmbientOcclusion { .. } => AO,
             Self::Sunlight { .. } => SUNLIGHT,
             Self::Snow { .. } => SNOW,
@@ -405,7 +411,7 @@ impl NodeKind {
             (Self::Colorize { .. } | Self::Normals { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Equalize { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. } | Self::Snow { .. } | Self::Sea { .. } | Self::AmbientOcclusion { .. } | Self::Sunlight { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Equalize { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. } | Self::Snow { .. } | Self::Sea { .. } | Self::MaterialMasks { .. } | Self::AmbientOcclusion { .. } | Self::Sunlight { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -551,6 +557,15 @@ fn evaluate_kind(
                 .with("wet", PortType::Mask, fields.wet)
                 .with("shore", PortType::Mask, fields.shore)
                 .with("beach", PortType::Mask, fields.beach)
+        },
+        NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend } => {
+            let field = classify_materials(take(0), *sea_level, *beach_width,
+                *rock_slope, *rock_blend, *snowline, *snow_blend, &cancelled)?;
+            NodeOutputs::default()
+                .with("sand", PortType::Mask, field.sand)
+                .with("soil", PortType::Mask, field.soil)
+                .with("rock", PortType::Mask, field.rock)
+                .with("snow", PortType::Mask, field.snow)
         },
         NodeKind::AmbientOcclusion { radius, strength } => {
             NodeOutputs::default().with("ao", PortType::Mask,

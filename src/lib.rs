@@ -17,3 +17,4 @@ pub mod snow;
 pub mod plates;
 pub mod sea;
 pub mod lighting;
+pub mod materials;
