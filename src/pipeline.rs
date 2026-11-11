@@ -298,6 +298,7 @@ impl NodeKind {
         const COLOR: &[(&str, PortType)] = &[("color", PortType::Color)];
         const CURVATURE: &[(&str, PortType)] = &[("curvature", PortType::Mask)];
         const ASPECT: &[(&str, PortType)] = &[("aspect", PortType::Mask)];
+        const MASK_LEVELS: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const DRAINAGE: &[(&str, PortType)] = &[
             ("accumulation", PortType::Mask),
             ("channels", PortType::Mask),
@@ -324,6 +325,7 @@ impl NodeKind {
             Self::Curvature => CURVATURE,
             Self::Aspect { .. } => ASPECT,
             Self::Drainage { .. } => DRAINAGE,
+            Self::MaskLevels { .. } => MASK_LEVELS,
             Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
         }
@@ -336,6 +338,7 @@ impl NodeKind {
              Self::Range { .. } | Self::Crater { .. } |
              Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
+            (Self::MaskLevels { .. }, 0) => Some(PortType::Mask),
             (Self::ColorMixer { .. }, 2) => Some(PortType::Mask),
             (Self::ColorMixer { .. }, 0 | 1) => Some(PortType::Color),
             (Self::Colorize { .. }, 0) => Some(PortType::Height),
@@ -428,6 +431,9 @@ fn evaluate_kind(
                 .with("accumulation", PortType::Mask, result.accumulation)
                 .with("channels", PortType::Mask, result.channels)
         },
+        NodeKind::MaskLevels { black, white, gamma, invert } =>
+            NodeOutputs::default().with("mask", PortType::Mask,
+                mask_levels(take(0), *black, *white, *gamma, *invert)?),
         NodeKind::ElevationMask { low, high, feather } => NodeOutputs::default()
             .with("mask", PortType::Mask,
                 elevation_mask(take(0), *low, *high, *feather)),
@@ -438,6 +444,28 @@ fn evaluate_kind(
             .with("height", PortType::Height, computed_blend(take(0), take(1), Some(take(2)), *mix)?),
     };
     Ok(result)
+}
+
+/// Adjust a typed mask without converting it to terrain height.
+pub fn mask_levels(
+    input: &HeightField, black: f32, white: f32, gamma: f32, invert: bool
+) -> Result<HeightField, String> {
+    if !black.is_finite() || !white.is_finite() || !gamma.is_finite()
+        || black < 0.0 || white > 1.0 || black >= white
+        || !(0.1..=4.0).contains(&gamma)
+    {
+        return Err("Mask levels require 0 <= black < white <= 1 and gamma 0.1–4".into());
+    }
+    let mut output = HeightField::flat(input.size, 0.0);
+    for (dst, &value) in output.values.iter_mut().zip(&input.values) {
+        if !value.is_finite() {
+            return Err("Mask levels require finite mask input".into());
+        }
+        let t = ((value - black) / (white - black)).clamp(0.0, 1.0)
+            .powf(gamma);
+        *dst = if invert { 1.0 - t } else { t };
+    }
+    Ok(output)
 }
 
 pub fn slope(field: &HeightField) -> HeightField {
@@ -518,6 +546,31 @@ mod tests {
             p.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
             restored.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
         );
+    }
+
+    #[test]
+    fn mask_levels_transform_is_bounded_invertible_and_type_safe() {
+        let source = HeightField { size: 32,
+            values: (0..1024).map(|i| (i % 32) as f32 / 31.0).collect(),
+        };
+        assert_eq!(mask_levels(&source, 0.0, 1.0, 1.0, false).unwrap(), source);
+        let inverted = mask_levels(&source, 0.0, 1.0, 1.0, true).unwrap();
+        for (a, b) in source.values.iter().zip(&inverted.values) {
+            assert!((a + b - 1.0).abs() < 1e-6);
+        }
+        assert!(mask_levels(&source, 0.7, 0.3, 1.0, false).is_err());
+        assert!(mask_levels(&source, 0.0, 1.0, f32::NAN, false).is_err());
+
+        let mut project = Project::default();
+        let source_id = project.graph.add(NodeKind::Slope);
+        let levels = project.graph.add(NodeKind::MaskLevels {
+            black: 0.15, white: 0.85, gamma: 1.5, invert: false
+        });
+        project.graph.connect(levels, 0, PortRef::new(source_id, "slope")).unwrap();
+        let output = project.graph.evaluate_port(32, &PortRef::new(levels, "mask")).unwrap();
+        assert_eq!(output.kind, PortType::Mask);
+        assert!(output.data.values.iter().all(|v| (0.0..=1.0).contains(v)));
+        assert!(project.graph.connect(levels, 0, PortRef::height(1)).is_err());
     }
 
     #[test]
