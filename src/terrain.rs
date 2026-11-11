@@ -614,14 +614,46 @@ pub fn export_png16(field: &HeightField, path: &Path) -> Result<(), String> {
 
 pub fn export_obj(field: &HeightField, path: &Path) -> Result<(), String> {
     use std::io::Write;
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
-    writeln!(out, "# Gaia terrain mesh").map_err(|e| e.to_string())?;
     let n = field.size;
+    if n < 2 || field.values.len() != n * n ||
+        field.values.iter().any(|v| !v.is_finite())
+    {
+        return Err("OBJ export requires a complete finite heightfield of at least 2x2".into());
+    }
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
+    writeln!(out, "# Gaia terrain mesh with UVs and per-vertex normals")
+        .map_err(|e| e.to_string())?;
+    let step = 2.0 / (n - 1) as f32;
     for y in 0..n {
         for x in 0..n {
-            let fx = x as f32 / (n - 1) as f32 * 2.0 - 1.0;
-            let fy = y as f32 / (n - 1) as f32 * 2.0 - 1.0;
-            writeln!(out, "v {fx:.6} {:.6} {fy:.6}", field.get(x, y)).map_err(|e| e.to_string())?;
+            let fx = x as f32 * step - 1.0;
+            let fz = y as f32 * step - 1.0;
+            writeln!(out, "v {fx:.6} {:.6} {fz:.6}", field.get(x, y))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // Align the texture with image-space PNG output (origin top-left).
+    for y in 0..n {
+        for x in 0..n {
+            let u = x as f32 / (n - 1) as f32;
+            let v = 1.0 - y as f32 / (n - 1) as f32;
+            writeln!(out, "vt {u:.6} {v:.6}").map_err(|e| e.to_string())?;
+        }
+    }
+    for y in 0..n {
+        for x in 0..n {
+            let left = field.get(x.saturating_sub(1), y);
+            let right = field.get((x + 1).min(n - 1), y);
+            let up = field.get(x, y.saturating_sub(1));
+            let down = field.get(x, (y + 1).min(n - 1));
+            // Same Y-up vertex normal convention as Gaia's wgpu preview.
+            let nx = left - right;
+            let ny = step * 2.0;
+            let nz = up - down;
+            let inv_length = (nx * nx + ny * ny + nz * nz).sqrt().recip();
+            writeln!(out, "vn {:.6} {:.6} {:.6}",
+                nx * inv_length, ny * inv_length, nz * inv_length)
+                .map_err(|e| e.to_string())?;
         }
     }
     for y in 0..(n - 1) {
@@ -630,7 +662,9 @@ pub fn export_obj(field: &HeightField, path: &Path) -> Result<(), String> {
             let b = a + 1;
             let c = a + n;
             let d = c + 1;
-            writeln!(out, "f {a} {c} {b}\nf {b} {c} {d}").map_err(|e| e.to_string())?;
+            writeln!(out,
+                "f {a}/{a}/{a} {c}/{c}/{c} {b}/{b}/{b}\nf {b}/{b}/{b} {c}/{c}/{c} {d}/{d}/{d}")
+                .map_err(|e| e.to_string())?;
         }
     }
     out.flush().map_err(|e| e.to_string())
@@ -639,6 +673,31 @@ pub fn export_obj(field: &HeightField, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn obj_export_includes_uvs_normals_and_indexed_faces() {
+        let n = 32;
+        let field = HeightField::flat(n, 0.45);
+        let file = std::env::temp_dir().join(format!(
+            "gaia-obj-uv-{}-{}.obj", std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        export_obj(&field, &file).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.iter().filter(|l| l.starts_with("v ")).count(), n*n);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("vt ")).count(), n*n);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("vn ")).count(), n*n);
+        assert_eq!(lines.iter().filter(|l| l.starts_with("f ")).count(), (n-1)*(n-1)*2);
+        assert!(lines.iter().any(|l| *l == "vt 0.000000 1.000000"));
+        assert!(lines.iter().any(|l| *l == "vn 0.000000 1.000000 0.000000"));
+        assert!(lines.iter().any(|l| *l == "f 1/1/1 33/33/33 2/2/2"));
+        std::fs::remove_file(&file).unwrap();
+        let mut invalid = field;
+        invalid.values[0] = f32::NAN;
+        assert!(export_obj(&invalid, &file).is_err());
+    }
 
     #[test]
     fn context_creation_connects_selected_height_not_global_output() {
