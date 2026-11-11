@@ -13,3 +13,4 @@ pub mod normals;
 pub mod depression;
 pub mod rivers;
 pub mod lakes;
+pub mod snow;
