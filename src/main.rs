@@ -1633,12 +1633,16 @@ impl GaiaApp {
                     "Output {} · {} · click or drag to connect", port, kind.label()));
                 if response.drag_started() {
                     self.selected = node.id;
+                    if !self.selected_nodes.contains(&node.id) {
+                        pending_selection = Some((node.id, false));
+                    }
                     self.wire_start = Some(PortRef::new(node.id, *port));
                     self.wire_dragging = true;
                     requested_preview = Some(PortRef::new(node.id, *port));
                     wire_armed = true;
                 } else if response.clicked() {
                     self.selected = node.id;
+                    pending_selection = Some((node.id, false));
                     let reference = PortRef::new(node.id, *port);
                     if let Some((target, input)) = self.wire_target.take() {
                         pending_connection = Some((target, input, reference));
