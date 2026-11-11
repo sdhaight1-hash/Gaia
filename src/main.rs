@@ -10,6 +10,25 @@ use gaia::hydrology::HydraulicParameters;
 use std::path::Path;
 use history::EditHistory;
 
+#[derive(Debug, PartialEq, Eq)]
+enum DroppedDocument {
+    Project,
+    Heightmap,
+    Unsupported,
+}
+
+fn classify_drop(path: &Path) -> DroppedDocument {
+    let filename = path.file_name().and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if filename.to_ascii_lowercase().ends_with(".gaia.json") {
+        DroppedDocument::Project
+    } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+        DroppedDocument::Heightmap
+    } else {
+        DroppedDocument::Unsupported
+    }
+}
+
 struct GaiaApp {
     project: Project,
     field: HeightField,
@@ -209,6 +228,34 @@ impl GaiaApp {
         };
     }
 
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        for dropped in ctx.input(|input| input.raw.dropped_files.clone()) {
+            let Some(path) = dropped.path else {
+                self.status = "Dropped file has no local path".to_owned();
+                continue;
+            };
+            match classify_drop(&path) {
+                DroppedDocument::Project => {
+                    self.filename = path.to_string_lossy().into_owned();
+                    self.open_project();
+                }
+                DroppedDocument::Heightmap => {
+                    self.add_node(NodeKind::ImportHeight {
+                        path: path.to_string_lossy().into_owned(),
+                        scale: 1.0,
+                    });
+                    self.status = format!("Added heightmap node: {}", path.display());
+                }
+                DroppedDocument::Unsupported => {
+                    self.status = format!(
+                        "Unsupported file: {} (use PNG or .gaia.json)",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
     fn add_node(&mut self, kind: NodeKind) {
         let is_mask = matches!(kind, NodeKind::Slope | NodeKind::Curvature | NodeKind::ElevationMask { .. });
         self.selected = self.project.graph.add(kind);
@@ -285,7 +332,7 @@ impl GaiaApp {
         ui.label(egui::RichText::new("TIP").size(11.0)
             .color(ui_theme::ACCENT).strong());
         ui.label(egui::RichText::new(
-            "Add a node, select it in the graph, then edit its connections in Properties."
+            "Drop a grayscale PNG onto Gaia to import it, or drag nodes together using sockets."
         ).size(12.0).color(ui_theme::MUTED));
     }
 
@@ -823,6 +870,14 @@ impl GaiaApp {
         ui.painter().rect_stroke(rect, 9.0, egui::Stroke::new(
             1.0, ui_theme::BORDER
         ), egui::StrokeKind::Inside);
+        if ui.ctx().input(|input| !input.raw.hovered_files.is_empty()) {
+            ui.painter().rect_filled(rect, 9.0, egui::Color32::from_black_alpha(205));
+            ui.painter().text(
+                rect.center(), egui::Align2::CENTER_CENTER,
+                "DROP PNG TO IMPORT\nDROP .GAIA.JSON TO OPEN",
+                egui::FontId::proportional(19.0), ui_theme::ACCENT,
+            );
+        }
         ui.painter().text(rect.left_top() + egui::vec2(16.0, 15.0),
             egui::Align2::LEFT_TOP,
             if self.view_2d { "SELECTED GRAPH MAP  •  TOP DOWN" }
@@ -860,6 +915,7 @@ impl eframe::App for GaiaApp {
             }
         }
         let project_before_frame = self.project.clone();
+        self.handle_dropped_files(&ctx);
 
         egui::Panel::top("gaia_toolbar")
             .frame(ui_theme::toolbar())
@@ -974,4 +1030,18 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("Gaia • Terrain Editor", options, Box::new(|cc| Ok(Box::new(GaiaApp::new(cc)))))
+}
+
+#[cfg(test)]
+mod file_drop_tests {
+    use super::*;
+
+    #[test]
+    fn only_png_heightmaps_and_gaia_projects_are_accepted() {
+        assert_eq!(classify_drop(Path::new("height.PNG")), DroppedDocument::Heightmap);
+        assert_eq!(classify_drop(Path::new("world.gaia.json")), DroppedDocument::Project);
+        assert_eq!(classify_drop(Path::new("WORLD.GAIA.JSON")), DroppedDocument::Project);
+        assert_eq!(classify_drop(Path::new("world.json")), DroppedDocument::Unsupported);
+        assert_eq!(classify_drop(Path::new("photo.jpeg")), DroppedDocument::Unsupported);
+    }
 }
