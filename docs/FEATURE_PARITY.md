@@ -20,7 +20,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Masks | Slope, Curvature, Aspect, horizon AO, Sunlight shadows, plate masks, sea wet/shore/beach, lake and snow coverage, drainage Accumulation/Channels, Elevation, Wear, Deposits, Flow, Mask Levels/invert | Feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
 | Color/materials | RGBA Color fields, editable altitude palettes, typed Color Mixer, AO/terrain-cast Sunlight masks, RGB normals with strength and green-axis flip, 2D/3D vertex-color preview, RGB8 export | PBR material model, multilayer textures, splat maps, detail/LOD normal maps and tangent-space mesh integration |
 | Snow, ice, vegetation | Independent Snow node: snowline/seed/slope adhesion, snowfall/melt and mass-conserving downhill settling; height/depth/coverage outputs | Particle snow, cascading snowfield, glaciers and ice dynamics, climate-dependent vegetation/scatter, point exports |
-| Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview that follows selected Height ports with continuous slope/elevation palette, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
+| Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview that follows selected Height ports with continuous slope/elevation palette, draggable socket wires, property inspector, native Open/Save As/Import PNG dialogs and export menu | Per-node thumbnails, analysis overlays, painting tools, persisted workspaces, visual QA |
 | Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 color PNG/OBJ with UVs and vertex normals, selected-port or all-node-ports cached headless CLI at up to 2048², seam-verified overlapping tile PNG export with manifest | Truly tiled/region graph execution, adaptive meshes, layered materials, multi-node build selection, build profiles/job queue, material exports and DCC/engine integrations |
 | Performance | Cancellable background builds, incremental cache, wgpu preview, 2K full-grid headless builds, first WGSL Blend compute kernel (>=256 samples) | True streamed tile/bucket graph evaluation beyond 2K, reduced cache memory footprint, GPU batched kernels and device numerical sign-off |
 
@@ -43,7 +43,7 @@ Real GPU numerical results remain required.
 ## Immediate implementation priorities
 
 1. Validate the depth-tested viewport, socket wiring, undo/redo and file drag/drop
-   on a real Windows GPU; native file dialogs remain incomplete.
+   on a real Windows GPU; Windows native dialogs still require physical interaction sign-off.
 2. Add terrain import and output units/scales, batch builds, diagnostic
    overlays and a reproducible benchmark suite.
 3. Extend priority-flood-conditioned D8 drainage through connected river tracing, basin labels and physically modeled lakes;

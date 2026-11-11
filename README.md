@@ -55,9 +55,13 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   drainage accumulation, channels, elevation mask, color)
   and inspect the result.
 - Top toolbar: Save, Open, Undo, Redo, Export, Rebuild. `Ctrl+S`,
-  `Ctrl+O`, `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
+  `Ctrl+O`, `Ctrl+Shift+S` (Save As), `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
   drags coalesce into one undo step; history holds the last 64 edits.
-  Save/Open use an editable project path, not file dialogs.
+  Open uses a native project-file chooser, Save writes the current project path,
+  and File → Save As opens a native save chooser; the editable path remains
+  available for explicit paths and headless-style workflows. Unsaved edits are
+  confirmed before replacing a project. Failed opens preserve the running
+  project and filename.
 - Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color and
   derived normal maps (flat tangent normal RGB ≈128,128,255; green-axis flip),
   or 2×2 / 4×4 overlapping PNG tile grids for the currently selected output
@@ -180,7 +184,7 @@ adapter is available; that is **not** evidence of GPU correctness.
 
 ## Known limitations
 
-- Native file dialogs, realistic multi-layer PBR materials, terrain painting,
+- Realistic multi-layer PBR materials, terrain painting,
   vegetation, snow/glaciers, lakes, rivers, tiles, large resolutions,
   high-end geology and production exports are not finished.
 - Graph ports support Height, Mask, Water and true RGBA Color fields.

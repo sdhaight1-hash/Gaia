@@ -10,7 +10,8 @@ use gaia::hydrology::HydraulicParameters;
 use gaia::color::{ColorField, export_rgb8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult};
 use history::EditHistory;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +32,13 @@ fn classify_drop(path: &Path) -> DroppedDocument {
     } else {
         DroppedDocument::Unsupported
     }
+}
+
+/// Use the current project's directory when opening native dialogs. A bare
+/// relative filename has no parent directory to preselect.
+fn project_dialog_directory(path: &Path) -> Option<&Path> {
+    path.parent().filter(|parent|
+        !parent.as_os_str().is_empty() && parent.is_dir())
 }
 
 /// The scroll content must encompass every node, not just the first few rows.
@@ -258,19 +266,63 @@ impl GaiaApp {
             format!("Tiled export failed: {error}"));
     }
 
-    fn save_project(&mut self) {
-        self.status = match self.project.save(Path::new(&self.filename)) {
+    fn project_file_dialog(&self, title: &str) -> FileDialog {
+        let mut dialog = FileDialog::new()
+            .set_title(title)
+            .add_filter("Gaia project (JSON)", &["json"]);
+        if let Some(directory) = project_dialog_directory(Path::new(&self.filename)) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog
+    }
+
+    fn confirm_replace_project(&self) -> bool {
+        !self.unsaved || MessageDialog::new()
+            .set_title("Unsaved Gaia changes")
+            .set_description("Discard unsaved changes and open a different project?")
+            .set_buttons(MessageButtons::YesNo)
+            .show() == MessageDialogResult::Yes
+    }
+
+    fn save_project_to(&mut self, path: &Path) {
+        self.status = match self.project.save(path) {
             Ok(()) => {
+                // A failed Save As must never retarget future Ctrl+S actions.
+                self.filename = path.to_string_lossy().into_owned();
                 self.unsaved = false;
-                format!("Saved {}", self.filename)
+                format!("Saved {}", path.display())
             }
             Err(error) => format!("Save failed: {error}"),
         };
     }
 
-    fn open_project(&mut self) {
-        match Project::load(Path::new(&self.filename)) {
+    fn save_project(&mut self) {
+        let path = PathBuf::from(&self.filename);
+        self.save_project_to(&path);
+    }
+
+    fn save_project_as_dialog(&mut self) {
+        let name = Path::new(&self.filename).file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("terrain.gaia.json")
+            .to_owned();
+        // The initial filename includes .gaia.json. Respect any custom path
+        // selected in the OS dialog instead of silently overwriting a
+        // different, extension-rewritten file after the overwrite prompt.
+        if let Some(path) = self.project_file_dialog("Save Gaia project as")
+            .set_file_name(name).save_file()
+        {
+            self.save_project_to(&path);
+        }
+    }
+
+    fn open_project_from(&mut self, path: &Path) {
+        match Project::load(path) {
             Ok(project) => {
+                // Commit all editor state only after successful loading,
+                // including the filename (also used by future exports).
+                self.filename = path.to_string_lossy().into_owned();
                 self.selected = project.graph.output;
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
@@ -279,9 +331,40 @@ impl GaiaApp {
                 self.skip_history_record = true;
                 self.graph_dirty = true;
                 self.unsaved = false;
-                self.status = format!("Opened {}", self.filename);
+                self.status = format!("Opened {}", path.display());
             }
             Err(error) => self.status = format!("Open failed: {error}"),
+        }
+    }
+
+    fn open_project(&mut self) {
+        if self.confirm_replace_project() {
+            let path = PathBuf::from(&self.filename);
+            self.open_project_from(&path);
+        }
+    }
+
+    fn open_project_dialog(&mut self) {
+        if !self.confirm_replace_project() {
+            return;
+        }
+        if let Some(path) = self.project_file_dialog("Open Gaia project").pick_file() {
+            self.open_project_from(&path);
+        }
+    }
+
+    fn import_heightmap_dialog(&mut self) {
+        let mut dialog = FileDialog::new()
+            .set_title("Import grayscale PNG heightmap")
+            .add_filter("PNG heightmaps", &["png"]);
+        if let Some(directory) = project_dialog_directory(Path::new(&self.filename)) {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.add_node(NodeKind::ImportHeight {
+                path: path.to_string_lossy().into_owned(), scale: 1.0,
+            });
+            self.status = format!("Added heightmap node: {}", path.display());
         }
     }
 
@@ -334,8 +417,9 @@ impl GaiaApp {
             let path = dropped.path().to_path_buf();
             match classify_drop(&path) {
                 DroppedDocument::Project => {
-                    self.filename = path.to_string_lossy().into_owned();
-                    self.open_project();
+                    if self.confirm_replace_project() {
+                        self.open_project_from(&path);
+                    }
                 }
                 DroppedDocument::Heightmap => {
                     self.add_node(NodeKind::ImportHeight {
@@ -532,12 +616,27 @@ impl GaiaApp {
                 ui.label(egui::RichText::new("●").color(ui_theme::AMBER))
                     .on_hover_text("Unsaved project changes");
             }
-            if ui.button("Open").on_hover_text("Open project · Ctrl+O").clicked() {
-                self.open_project();
+            if ui.button("Open…").on_hover_text("Choose project · Ctrl+O").clicked() {
+                self.open_project_dialog();
             }
-            if ui.button("Save").on_hover_text("Save project · Ctrl+S").clicked() {
+            if ui.button("Save").on_hover_text("Save current project · Ctrl+S").clicked() {
                 self.save_project();
             }
+            ui.menu_button("File", |ui| {
+                if ui.button("Open entered path").clicked() {
+                    self.open_project();
+                    ui.close();
+                }
+                if ui.button("Save As…  Ctrl+Shift+S").clicked() {
+                    self.save_project_as_dialog();
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Import PNG heightmap…").clicked() {
+                    self.import_heightmap_dialog();
+                    ui.close();
+                }
+            });
             if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
                 .on_hover_text("Undo · Ctrl+Z").clicked()
             {
@@ -1319,11 +1418,14 @@ impl eframe::App for GaiaApp {
         let ctx = ui.ctx().clone();
 
         // Standard shortcuts. Open never modifies the running project on failure.
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+        if ctx.input(|i| i.modifiers.command && i.modifiers.shift
+            && i.key_pressed(egui::Key::S)) {
+            self.save_project_as_dialog();
+        } else if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
             self.save_project();
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) {
-            self.open_project();
+            self.open_project_dialog();
         }
         // Leave keyboard undo inside focused text fields to egui's text editor.
         if !ctx.egui_wants_keyboard_input() {
@@ -1474,6 +1576,15 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod file_drop_tests {
     use super::*;
+
+    #[test]
+    fn project_dialog_directory_uses_existing_parent_only() {
+        assert!(project_dialog_directory(Path::new("terrain.gaia.json")).is_none());
+        assert!(project_dialog_directory(Path::new("nonexistent-folder/terrain.gaia.json")).is_none());
+        let temp = std::env::temp_dir();
+        let path = temp.join("terrain.gaia.json");
+        assert_eq!(project_dialog_directory(&path), Some(temp.as_path()));
+    }
 
     #[test]
     fn only_png_heightmaps_and_gaia_projects_are_accepted() {
