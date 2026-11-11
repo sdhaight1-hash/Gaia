@@ -64,6 +64,13 @@ the default world edge is **open**. Add `--hydraulic-edge closed` to retain
 water and sediment at the outer world boundary, or
 `--hydraulic-checkpoint` to include a restartable full-precision snapshot.
 
+**Desktop export:** select an existing Hydraulic node in the graph, then use
+**Export → Hydraulic region build…**. Choose 256²–8192² output resolution,
+tile count, open/closed world boundary, output stem and optional checkpoint.
+The build runs on a separate worker thread so node editing and viewport
+navigation remain responsive; completion/errors appear in the status bar.
+This uses the same opt-in engine as the command-line mode.
+
 This creates `builds/eroded.hydraulic.tiles/` with six folders
 (`height`, `water`, `sediment`, `wear`, `deposits`, `flow`) of
 overlapping, seam-consistent PNG16 tiles, plus `report.json` with water and
