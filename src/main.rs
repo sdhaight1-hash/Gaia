@@ -303,6 +303,9 @@ impl GaiaApp {
     }
 
     fn palette_node(&mut self, ui: &mut egui::Ui, name: &str, detail: &str, kind: NodeKind) {
+        // Windows egui's default font lacks several decorative Unicode glyphs:
+        // the video showed a row of missing-glyph squares. Labels need no icons.
+        let name = name.split_once("  ").map_or(name, |(_, label)| label);
         let button = egui::Button::new(
             egui::RichText::new(name).size(13.0).color(ui_theme::TEXT)
         ).fill(ui_theme::PANEL_RAISED);
@@ -387,9 +390,8 @@ impl GaiaApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("◈").size(22.0).color(ui_theme::ACCENT));
             ui.label(egui::RichText::new("GAIA").size(20.0)
-                .strong().color(ui_theme::TEXT));
+                .strong().color(ui_theme::ACCENT));
             ui.label(egui::RichText::new("TERRAIN STUDIO").size(10.0)
                 .color(ui_theme::MUTED));
             ui.separator();
@@ -406,19 +408,19 @@ impl GaiaApp {
             if ui.button("Save").on_hover_text("Save project · Ctrl+S").clicked() {
                 self.save_project();
             }
-            if ui.add_enabled(self.history.can_undo(), egui::Button::new("↶ Undo"))
+            if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
                 .on_hover_text("Undo · Ctrl+Z").clicked()
             {
                 self.undo_edit();
                 self.skip_history_record = true;
             }
-            if ui.add_enabled(self.history.can_redo(), egui::Button::new("↷ Redo"))
+            if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo"))
                 .on_hover_text("Redo · Ctrl+Shift+Z or Ctrl+Y").clicked()
             {
                 self.redo_edit();
                 self.skip_history_record = true;
             }
-            ui.menu_button("Export ▾", |ui| {
+            ui.menu_button("Export", |ui| {
                 if ui.button("16-bit Heightmap  ·  PNG").clicked() {
                     self.export_heightmap();
                     ui.close();
@@ -434,7 +436,7 @@ impl GaiaApp {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(egui::Button::new(
-                    egui::RichText::new("↻  Rebuild").color(ui_theme::BG).strong()
+                    egui::RichText::new("Rebuild").color(ui_theme::BG).strong()
                 ).fill(ui_theme::ACCENT)).on_hover_text("Regenerate the terrain").clicked() {
                     self.graph_dirty = true;
                 }
