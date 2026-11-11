@@ -104,6 +104,39 @@ regional CLI must continue rejecting Hydraulic. Also, 4K/8K disk/CPU/RSS
 benchmarks have not been run on the target hardware.
 The normal region CLI must keep rejecting global hydraulic operations.
 
+## Two-dimensional tiled solver checkpoint (experimental)
+
+`src/hydraulic_tiles.rs` implements **disjoint 2D owned-core** execution for
+the disk-backed rain → face transport → rock/suspended erosion/deposition →
+evaporation tick. Every core reads a clipped **two-sample halo** from the
+previous committed world files. The extra pixel is necessary because
+incoming face flux from a neighboring donor depends on that donor's own
+one-sample hydraulic-head stencil. Every interior crossing is a paired
+transfer; only the physical world boundary contributes to external outflow.
+
+Core coverage is checked for gaps and overlaps using vertical-band interval
+checks rather than a full-world bitmap. Input core order is canonicalized by
+global (y,x). The same six output fields (height, water, suspended sediment,
+wear, deposits, flow) are written to new disk files at absolute world-grid
+offsets. No original state is replaced until *every* tile succeeds. The
+maximum owned tile is 65,536 samples (plus two halo pixels each side), so
+resident buffers scale with configured tile footprint and not whole-world
+resolution. This is **not** the PNG region layout: image-export border
+samples remain separate from unique simulation core ownership.
+
+Acceptance fixtures compare 32² and 65² frozen-slope states exactly against
+the existing row-streamed solver for 1×1, 2×3, 3×2, and 7×5 tiles, including
+reverse request order, open/closed outer edges, multi-tick progression,
+seam crossings, invalid cores and cancellation. F64 ledger totals are
+compared with a tiny tolerance because tile-order summation may differ from
+global row order; individual field values must match bit-for-bit.
+
+This is still **not production regional hydraulic support**. Graph-to-tile
+input streaming, prescribed boundary inflow, loose sediment, watershed /
+channel coupling, restartable on-disk caches, arbitrary distributed worker
+scheduling, 4K/8K target hardware RSS/time and user-visible GUI/CLI region
+hydraulic builds remain unfinished. Current region CLI rejection is retained.
+
 ## Restartable disk-state checkpoint checkpoint (experimental)
 
 `src/hydraulic_checkpoint.rs` adds `DiskTransport::save_checkpoint`
