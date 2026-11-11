@@ -244,6 +244,33 @@ impl Graph {
     }
 
     pub fn add(&mut self, kind: NodeKind) -> u64 {
+        // An empty project graph can lack both masks and color fields. Invalid
+        // placeholder ports like #output:wear poisoned evaluation immediately
+        // after inserting a MaskLevels, MaskedBlend or ColorMixer.
+        //
+        // Create small, visible, correctly typed prerequisite nodes instead.
+        let needs_mask = matches!(kind,
+            NodeKind::MaskLevels { .. } | NodeKind::MaskedBlend { .. }
+                | NodeKind::ColorMixer { .. });
+        if needs_mask && !self.nodes.iter().any(|node|
+            node.kind.output_ports().iter().any(|(_, ty)|
+                *ty == crate::pipeline::PortType::Mask))
+        {
+            self.add(NodeKind::Slope);
+        }
+        if matches!(kind, NodeKind::ColorMixer { .. }) && !self.nodes.iter().any(|node|
+            node.kind.output_ports().iter().any(|(_, ty)|
+                *ty == crate::pipeline::PortType::Color))
+        {
+            self.add(NodeKind::Colorize {
+                low: [0.13, 0.27, 0.19], high: [0.85, 0.85, 0.78],
+                midpoint: 0.5, contrast: 1.0,
+            });
+            self.add(NodeKind::Colorize {
+                low: [0.28, 0.27, 0.26], high: [0.88, 0.84, 0.78],
+                midpoint: 0.5, contrast: 1.0,
+            });
+        }
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
         let inputs = if matches!(kind, NodeKind::MaskLevels { .. }) {
             let mask = self.nodes.iter().rev().find_map(|node| {
@@ -746,6 +773,60 @@ mod tests {
         let color_port = PortRef::new(color, "color");
         let mixer = project.graph.add_from(NodeKind::ColorMixer { mix: 0.3 }, &color_port);
         assert_eq!(project.graph.get(mixer).unwrap().inputs[0], color_port);
+    }
+
+    #[test]
+    fn default_mask_and_color_compositing_nodes_have_valid_autowired_inputs() {
+        let mut project = Project::default();
+        let levels = project.graph.add(NodeKind::MaskLevels {
+            black: 0.0, white: 1.0, gamma: 1.0, invert: false,
+        });
+        let input = &project.graph.get(levels).unwrap().inputs[0];
+        assert!(project.graph.get(input.node).is_some_and(|node|
+            node.kind.output_ports().iter().any(|(name, ty)|
+                *name == input.port && *ty == crate::pipeline::PortType::Mask)));
+        assert!(project.graph.evaluate_port(32, &PortRef::new(levels, "mask")).is_ok());
+
+        let mixer = project.graph.add(NodeKind::ColorMixer { mix: 0.5 });
+        let inputs = &project.graph.get(mixer).unwrap().inputs;
+        assert_ne!(inputs[0], inputs[1], "two default palettes should be distinct");
+        assert!(project.graph.evaluate_port(32,
+            &PortRef::new(mixer, "color")).is_ok());
+        assert!(project.graph.evaluate(32).is_ok());
+
+        let blend = project.graph.add(NodeKind::MaskedBlend { mix: 0.7 });
+        assert!(project.graph.evaluate_port(32,
+            &PortRef::height(blend)).is_ok());
+    }
+
+    #[test]
+    fn adding_color_mixer_to_fresh_project_builds_all_missing_sources() {
+        let mut project = Project::default();
+        let mixer = project.graph.add(NodeKind::ColorMixer { mix: 0.65 });
+        let inputs = &project.graph.get(mixer).unwrap().inputs;
+        assert_eq!(inputs.len(), 3);
+        let sources: Vec<_> = inputs.iter().map(|reference|
+            project.graph.get(reference.node).unwrap().kind
+                .output_ports().iter()
+                .find(|(name, _)| *name == reference.port).unwrap().1
+        ).collect();
+        assert_eq!(sources, [
+            crate::pipeline::PortType::Color,
+            crate::pipeline::PortType::Color,
+            crate::pipeline::PortType::Mask,
+        ]);
+        assert_ne!(inputs[0], inputs[1]);
+        assert!(project.graph.evaluate_port(32,
+            &PortRef::new(mixer, "color")).is_ok());
+    }
+
+    #[test]
+    fn masked_blend_without_existing_mask_generates_slope_source() {
+        let mut project = Project::default();
+        let blend = project.graph.add(NodeKind::MaskedBlend { mix: 0.8 });
+        let input = &project.graph.get(blend).unwrap().inputs[2];
+        assert_eq!(input.port, "slope");
+        assert!(project.graph.evaluate(32).is_ok());
     }
 
     #[test]
