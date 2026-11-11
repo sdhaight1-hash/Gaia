@@ -8,6 +8,8 @@ use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
 use gaia::color::{ColorField, export_rgb8};
+use gaia::tiles::{tile_layout, tile_height, tile_color};
+use serde_json::json;
 use std::path::Path;
 use history::EditHistory;
 
@@ -206,6 +208,54 @@ impl GaiaApp {
             }
             Err(error) => self.status = format!("Map export failed: {error}"),
         }
+    }
+
+    fn export_selected_tiles(&mut self, count: usize) {
+        let operation = (|| -> Result<String, String> {
+            let output = self.project.graph.evaluate_port(
+                self.project.resolution, &self.preview_source)?;
+            let layout = tile_layout(self.project.resolution, count)?;
+            let suffix = format!("node{}-{}", self.preview_source.node, self.preview_source.port);
+            let base = Path::new(&self.filename);
+            let folder = base.with_extension(format!("{suffix}.tiles"));
+            let manifest = base.with_extension(format!("{suffix}.tiles.json"));
+            std::fs::create_dir_all(&folder)
+                .map_err(|e| format!("Tile output folder: {e}"))?;
+            for y in 0..count {
+                for x in 0..count {
+                    let path = folder.join(format!("x{x:02}_y{y:02}.png"));
+                    if output.kind == PortType::Color {
+                        let color = output.color.as_ref()
+                            .ok_or("Selected color port has no RGBA data")?;
+                        export_rgb8(&tile_color(color, layout, x, y)?, &path)?;
+                    } else {
+                        export_png16(&tile_height(&output.data, layout, x, y)?, &path)?;
+                    }
+                }
+            }
+            let data = json!({
+                "tiles_per_axis": count,
+                "tile_count": count * count,
+                "pixels_per_tile": layout.pixels_per_tile,
+                "stitched_pixels": layout.stitched_pixels,
+                "overlap_pixels": 1,
+                "source_resolution": self.project.resolution,
+                "output_node": self.preview_source.node,
+                "output_port": self.preview_source.port,
+                "format": if output.kind == PortType::Color { "RGB8" } else { "Grayscale16" },
+                "folder": folder.display().to_string(),
+                "origin": "top-left, y increases downward",
+                "sampling": "global bilinear sampling with identical adjacent edges",
+                "execution": "full graph evaluated once, then split into overlapping tiles",
+            });
+            std::fs::write(&manifest,
+                serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Exported {count}×{count} selected-output tiles into {}",
+                folder.display()))
+        })();
+        self.status = operation.unwrap_or_else(|error|
+            format!("Tiled export failed: {error}"));
     }
 
     fn save_project(&mut self) {
@@ -470,6 +520,15 @@ impl GaiaApp {
                 }
                 if ui.button("Selected output · PNG16 / RGB8").clicked() {
                     self.export_selected_map();
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Selected output · 2×2 tiled PNG").clicked() {
+                    self.export_selected_tiles(2);
+                    ui.close();
+                }
+                if ui.button("Selected output · 4×4 tiled PNG").clicked() {
+                    self.export_selected_tiles(4);
                     ui.close();
                 }
             });
