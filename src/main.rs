@@ -374,7 +374,7 @@ impl GaiaApp {
                     changed |= ui.text_edit_singleline(path).changed();
                     changed |= ui.add(egui::Slider::new(scale, 0.0..=8.0)
                         .text("Height scale")).changed();
-                    ui.small("Supported: grayscale PNG8 or PNG16. File paths are relative to the working directory.");
+                    ui.small("PNG8/PNG16 grayscale. Newly entered relative paths use the working directory; saved projects reference assets from the project folder.");
                 }
                 NodeKind::Mountain { seed, frequency, height } => {
                     changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
