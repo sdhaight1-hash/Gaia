@@ -122,6 +122,7 @@ struct GaiaApp {
     preview_source: PortRef,
     selected: u64,
     wire_start: Option<PortRef>,
+    wire_dragging: bool,
     filename: String,
     node_search: String,
     status: String,
@@ -139,6 +140,7 @@ struct GaiaApp {
     skip_history_record: bool,
     focus_graph_selection: bool,
     fit_graph_requested: bool,
+    graph_zoom_step: f32,
     graph_view: GraphView,
     delete_confirmation: Option<u64>,
 }
@@ -167,6 +169,7 @@ impl GaiaApp {
         Self {
             selected: project.graph.output,
             wire_start: None,
+            wire_dragging: false,
             project,
             field,
             material_color: None,
@@ -191,6 +194,7 @@ impl GaiaApp {
             skip_history_record: false,
             focus_graph_selection: false,
             fit_graph_requested: true,
+            graph_zoom_step: 1.0,
             graph_view: GraphView::default(),
             delete_confirmation: None,
         }
@@ -406,6 +410,7 @@ impl GaiaApp {
                 self.focus_graph_selection = true;
                 self.fit_graph_requested = true;
                 self.wire_start = None;
+                self.wire_dragging = false;
                 self.delete_confirmation = None;
                 self.history.clear();
                 self.skip_history_record = true;
@@ -459,6 +464,7 @@ impl GaiaApp {
             self.preview_source = PortRef::height(self.project.graph.output);
         }
         self.wire_start = None;
+        self.wire_dragging = false;
         self.delete_confirmation = None;
         self.graph_dirty = true;
         self.unsaved = true;
@@ -487,6 +493,7 @@ impl GaiaApp {
         self.selected = self.project.graph.output;
         self.preview_source = PortRef::height(self.selected);
         self.wire_start = None;
+        self.wire_dragging = false;
         self.delete_confirmation = None;
         self.focus_graph_selection = true;
         self.graph_dirty = true;
@@ -1294,6 +1301,10 @@ impl GaiaApp {
             }
             self.focus_graph_selection = false;
         }
+        if self.graph_zoom_step != 1.0 {
+            self.graph_view.zoom_at(rect, rect.center(), self.graph_zoom_step);
+            self.graph_zoom_step = 1.0;
+        }
 
         // Pan by dragging empty canvas or using the middle mouse button over
         // anything. Holding Space while dragging also pans instead of moving
@@ -1385,7 +1396,7 @@ impl GaiaApp {
                     .find(|(port, _)| *port == source.port))
                 .map(|(_, ty)| *ty)
         });
-        let can_pan = !(space && ui.input(|i| i.pointer.primary_down()));
+        let can_move = !space && !middle;
         for node in &mut self.project.graph.nodes {
             let node_rect = view.node_rect(rect, node);
             let response = ui.interact(node_rect, ui.id().with(("node", node.id)),
@@ -1412,7 +1423,7 @@ impl GaiaApp {
                     requested_preview = Some(PortRef::new(node.id, *port));
                 }
             }
-            if response.dragged() && can_pan {
+            if response.dragged() && can_move {
                 let motion = response.drag_motion() / view.zoom;
                 node.position[0] += motion.x;
                 node.position[1] += motion.y;
@@ -1491,9 +1502,16 @@ impl GaiaApp {
                     ui.id().with(("output", node.id, slot)),
                     egui::Sense::click_and_drag()).on_hover_text(format!(
                     "Output {} · {} · click or drag to connect", port, kind.label()));
-                if response.clicked() || response.drag_started() {
+                if response.drag_started() {
                     self.selected = node.id;
                     self.wire_start = Some(PortRef::new(node.id, *port));
+                    self.wire_dragging = true;
+                    requested_preview = Some(PortRef::new(node.id, *port));
+                    wire_armed = true;
+                } else if response.clicked() {
+                    self.selected = node.id;
+                    self.wire_start = Some(PortRef::new(node.id, *port));
+                    self.wire_dragging = false;
                     requested_preview = Some(PortRef::new(node.id, *port));
                     wire_armed = true;
                 }
@@ -1557,14 +1575,16 @@ impl GaiaApp {
                 Err(error) => self.status = format!("Connection rejected: {error}"),
             }
             self.wire_start = None;
-        } else if released && !wire_armed && self.wire_start.is_some() {
-            // Dragging onto empty space cancels; click-to-connect stays armed
-            // until a target is clicked or Escape is pressed.
-            let drag_ended = ui.input(|i| i.pointer.is_decidedly_dragging());
-            if drag_ended { self.wire_start = None; }
+            self.wire_dragging = false;
+        } else if released && !wire_armed && self.wire_dragging {
+            // Drag-to-connect is one gesture; dropping on empty space cancels.
+            // Click-to-connect remains armed for a later input click.
+            self.wire_start = None;
+            self.wire_dragging = false;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.wire_start = None;
+            self.wire_dragging = false;
         }
         if let Some(id) = requested_delete {
             self.request_node_deletion(id);
@@ -1840,13 +1860,11 @@ impl eframe::App for GaiaApp {
                             self.focus_graph_selection = true;
                         }
                         if ui.small_button("+").on_hover_text("Zoom in").clicked() {
-                            self.graph_view.zoom =
-                                (self.graph_view.zoom * 1.2).min(graph_view::MAX_ZOOM);
+                            self.graph_zoom_step = 1.2;
                         }
                         ui.label(format!("{:.0}%", self.graph_view.zoom * 100.0));
                         if ui.small_button("−").on_hover_text("Zoom out").clicked() {
-                            self.graph_view.zoom =
-                                (self.graph_view.zoom / 1.2).max(graph_view::MIN_ZOOM);
+                            self.graph_zoom_step = 1.0 / 1.2;
                         }
                     });
                 });

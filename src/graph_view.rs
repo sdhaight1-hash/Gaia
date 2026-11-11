@@ -7,7 +7,8 @@ use gaia::terrain::Node;
 pub const CARD_WIDTH: f32 = 194.0;
 pub const PORT_START: f32 = 56.0;
 pub const PORT_STEP: f32 = 22.0;
-pub const MIN_ZOOM: f32 = 0.35;
+// Allow a meaningful entire-graph overview even for 50–100 node layouts.
+pub const MIN_ZOOM: f32 = 0.06;
 pub const MAX_ZOOM: f32 = 2.25;
 
 pub fn card_height(node: &Node) -> f32 {
@@ -119,6 +120,27 @@ mod tests {
         assert!((view.node_rect(viewport, &nodes[0]).center()
             - viewport.center()).length() < 1e-4);
         assert_eq!(nodes.iter().map(|n| n.position).collect::<Vec<_>>(), before);
+    }
+
+    #[test]
+    fn fit_frames_large_graph_without_touching_node_coordinates() {
+        let mut graph = Project::default().graph;
+        for i in 0..80 {
+            graph.add(gaia::terrain::NodeKind::Noise {
+                seed: i, frequency: 4.0, amplitude: 0.2,
+            });
+        }
+        let positions: Vec<_> = graph.nodes.iter().map(|node| node.position).collect();
+        let viewport = Rect::from_min_size(
+            Pos2::new(10.0, 20.0), egui::vec2(700.0, 230.0));
+        let mut view = GraphView::default();
+        view.fit_all(viewport, &graph.nodes);
+        assert!(view.zoom < 0.35);
+        for node in &graph.nodes {
+            let card = view.node_rect(viewport, node);
+            assert!(viewport.contains(card.center()), "not fitted node #{}: {:?}", node.id, card);
+        }
+        assert_eq!(positions, graph.nodes.iter().map(|node| node.position).collect::<Vec<_>>());
     }
 
     #[test]
