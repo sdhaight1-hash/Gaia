@@ -192,7 +192,23 @@ impl Graph {
 
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
-        let inputs = match kind.input_count() {
+        let inputs = if matches!(kind, NodeKind::ColorMixer { .. }) {
+            let color_sources: Vec<PortRef> = self.nodes.iter().rev()
+                .filter_map(|node| node.kind.output_ports().iter()
+                    .find(|(_, ty)| *ty == crate::pipeline::PortType::Color)
+                    .map(|(port, _)| PortRef::new(node.id, *port)))
+                .collect();
+            let first = color_sources.first().cloned()
+                .unwrap_or_else(|| PortRef::new(self.output, "color"));
+            let second = color_sources.get(1).cloned().unwrap_or_else(|| first.clone());
+            let mask = self.nodes.iter().rev().find_map(|node| {
+                node.kind.output_ports().iter()
+                    .find(|(_, ty)| *ty == crate::pipeline::PortType::Mask)
+                    .map(|(name, _)| PortRef::new(node.id, *name))
+            }).unwrap_or_else(|| PortRef::new(self.output, "wear"));
+            vec![first, second, mask]
+        } else {
+            match kind.input_count() {
             0 => vec![],
             1 => vec![PortRef::height(self.output)],
             2 => vec![PortRef::height(self.output), PortRef::height(1)],
@@ -205,6 +221,7 @@ impl Graph {
                 vec![PortRef::height(self.output), PortRef::height(1), mask]
             }
             _ => unreachable!("all node kinds have up to three inputs"),
+            }
         };
         let position = [
             65.0 + (self.nodes.len() % 4) as f32 * 220.0,
