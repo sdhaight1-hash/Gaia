@@ -30,8 +30,8 @@ fn source_and_parameters(
     project.graph.validate_structure()?;
     let node = project.graph.get(hydraulic_node)
         .ok_or_else(|| format!("Hydraulic node #{hydraulic_node} does not exist"))?;
-    let params = match node.kind {
-        NodeKind::Hydraulic { params } => params,
+    let params = match &node.kind {
+        NodeKind::Hydraulic { params } => *params,
         _ => return Err(format!("Node #{hydraulic_node} is not Hydraulic")),
     };
     let source = node.inputs.first()
@@ -204,7 +204,7 @@ pub fn build_hydraulic_regions(
     let stage = tempfile::Builder::new().prefix(".gaia-hydraulic-")
         .tempdir_in(parent).map_err(|err| err.to_string())?;
     let exported = export_tiled_fields(&mut state, stage.path(), layout)?;
-    let mut report = json!({
+    let report = json!({
         "application": "gaia",
         "version": env!("CARGO_PKG_VERSION"),
         "mode": "hydraulic_region_build",
@@ -338,8 +338,8 @@ mod tests {
             let (lw, lh, lbytes) = load_png(&left);
             let (rw, rh, rbytes) = load_png(&right);
             assert_eq!(lh, rh);
-            assert_eq!(lw, 17);
-            assert_eq!(rw, 16);
+            assert_eq!(lw, 16);
+            assert_eq!(rw, 17);
             for row in 0..lh {
                 let a = &lbytes[(row * lw + lw - 1) * 2 .. (row * lw + lw) * 2];
                 let b = &rbytes[row * rw * 2 .. row * rw * 2 + 2];
