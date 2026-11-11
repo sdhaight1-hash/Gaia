@@ -83,7 +83,7 @@ See \`src/terrain.rs\` persistence tests.
   disconnected sockets are not supported.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
-- Center **3D** preview: left drag orbit, scroll zoom, reset camera.
+- Center **3D** preview: left drag orbit, **Shift+left / middle / right drag to pan**, scroll zoom, **Perspective / Ortho** projection toggle and reset camera. Camera-only movements update GPU uniforms without re-uploading terrain geometry.
   Default terrain surface colors blend smoothly across elevation and slope,
   avoiding unnatural horizontal rings around crater or mountain thresholds.
   Selecting any Height output (including Lake:surface, or an earlier generator)

@@ -6,6 +6,7 @@ mod ui_theme;
 mod history;
 
 use eframe::egui;
+use glam::Vec3;
 use gaia::terrain::{export_obj, export_png16, HeightField, MaterialPalette, NodeKind, Node, Project};
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
@@ -135,6 +136,8 @@ struct GaiaApp {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    camera_target: Vec3,
+    camera_projection: gpu::CameraProjection,
     sun_azimuth: f32,
     sun_elevation: f32,
     sun_strength: f32,
@@ -167,7 +170,8 @@ impl GaiaApp {
         let pitch = 0.72;
         let distance = 3.7;
         if let Some(render_state) = &cc.wgpu_render_state {
-            gpu::install(render_state, &field, gpu::eye_position(yaw, pitch, distance));
+            gpu::install(render_state, &field, gpu::eye_position(
+                yaw, pitch, distance, gpu::DEFAULT_CAMERA_TARGET));
         }
         let texture = Some(cc.egui_ctx.load_texture(
             "Gaia heightfield", height_image(&field), egui::TextureOptions::LINEAR,
@@ -189,10 +193,12 @@ impl GaiaApp {
             preview_source,
             filename: "terrain.gaia.json".to_string(),
             node_search: String::new(),
-            status: "Ready. Drag on the 3D preview to orbit; scroll to zoom.".to_string(),
+            status: "Ready. Drag 3D to orbit; Shift-drag or middle/right-drag to pan.".to_string(),
             yaw,
             pitch,
             distance,
+            camera_target: gpu::DEFAULT_CAMERA_TARGET,
+            camera_projection: gpu::CameraProjection::Perspective,
             sun_azimuth: 55.0,
             sun_elevation: 60.0,
             sun_strength: 2.0,
@@ -1831,8 +1837,13 @@ impl GaiaApp {
                     self.yaw = 0.85;
                     self.pitch = 0.72;
                     self.distance = 3.7;
-                    self.gpu_dirty = true;
+                    self.camera_target = gpu::DEFAULT_CAMERA_TARGET;
+                    self.camera_projection = gpu::CameraProjection::Perspective;
                 }
+                ui.selectable_value(&mut self.camera_projection,
+                    gpu::CameraProjection::Orthographic, "Ortho");
+                ui.selectable_value(&mut self.camera_projection,
+                    gpu::CameraProjection::Perspective, "Perspective");
                 ui.menu_button("Lighting", |ui| {
                     ui.label(egui::RichText::new("VIEWPORT LIGHT").strong());
                     ui.add(egui::Slider::new(&mut self.sun_azimuth, 0.0..=360.0)
@@ -1853,6 +1864,8 @@ impl GaiaApp {
         ui.add_space(9.0);
         let size = ui.available_size().max(egui::vec2(100.0, 100.0));
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
+        let response = response.on_hover_text(
+            "Left drag: orbit · Shift+left or middle/right drag: pan · Wheel: zoom");
         ui.painter().rect_filled(rect, 9.0, ui_theme::CANVAS);
         if self.view_2d {
             if let Some(texture) = &self.texture {
@@ -1868,9 +1881,19 @@ impl GaiaApp {
             if response.dragged() {
                 let motion = response.drag_motion();
                 if motion.length_sq() > 0.0 {
-                    self.yaw += motion.x * 0.008;
-                    self.pitch = (self.pitch - motion.y * 0.008).clamp(0.2, 1.5);
-                    self.gpu_dirty = true;
+                    let pan = ui.input(|i| i.modifiers.shift)
+                        || response.dragged_by(egui::PointerButton::Middle)
+                        || response.dragged_by(egui::PointerButton::Secondary);
+                    if pan {
+                        self.camera_target += gpu::pan_delta(
+                            self.yaw, self.pitch, self.distance,
+                            rect.height(), [motion.x, motion.y]);
+                    } else {
+                        self.yaw += motion.x * 0.008;
+                        self.pitch = (self.pitch - motion.y * 0.008).clamp(0.2, 1.5);
+                    }
+                    // The paint callback updates only camera uniforms.
+                    // Re-uploading all terrain vertices on orbit/zoom is unnecessary.
                 }
             }
             if response.hovered() {
@@ -1878,17 +1901,18 @@ impl GaiaApp {
                 if scroll.abs() > 0.1 {
                     self.distance = (self.distance * (1.0 - scroll * 0.001))
                         .clamp(1.5, 12.0);
-                    self.gpu_dirty = true;
                 }
             }
             let matrix = gpu::view_matrix(
                 self.yaw, self.pitch, self.distance,
-                rect.width() / rect.height().max(1.0)
+                rect.width() / rect.height().max(1.0),
+                self.camera_target, self.camera_projection,
             );
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
                 rect, gpu::TerrainCallback {
                     camera: matrix,
-                    eye: gpu::eye_position(self.yaw, self.pitch, self.distance)
+                    eye: gpu::eye_position(
+                        self.yaw, self.pitch, self.distance, self.camera_target)
                         .extend(1.0).to_array(),
                     materials: self.project.graph.get(self.preview_source.node)
                         .and_then(|node| match &node.kind {
