@@ -48,6 +48,39 @@ existence is checked on open).
 
 See \`src/terrain.rs\` persistence tests.
 
+## Bounded-memory hydraulic region builds (experimental)
+
+An existing **Hydraulic** node can now be built headlessly at up to 8192²
+without evaluating an entire world-sized HeightField in RAM, provided its
+*upstream* height-producing graph is supported by the regional evaluator.
+
+```powershell
+cargo run --release --bin gaia-build -- --project terrain.gaia.json --hydraulic-region 8 --region-tiles 4 --resolution 1024 --no-obj --output builds/eroded
+```
+
+Replace `8` with the ID of a Hydraulic node in the saved project. Its own
+rain, erosion, deposition, evaporation and iteration settings are used;
+the default world edge is **open**. Add `--hydraulic-edge closed` to retain
+water and sediment at the outer world boundary, or
+`--hydraulic-checkpoint` to include a restartable full-precision snapshot.
+
+This creates `builds/eroded.hydraulic.tiles/` with six folders
+(`height`, `water`, `sediment`, `wear`, `deposits`, `flow`) of
+overlapping, seam-consistent PNG16 tiles, plus `report.json` with water and
+solid-mass audits. PNG16 outputs are clipped/normalized to 0..1; optional
+checkpoints preserve the raw f32 fields. The folder is only published after
+the entire build succeeds, and existing outputs are never overwritten.
+
+**Limits:** Simulation tile cores cannot exceed 256×256; use at least
+`ceil(resolution / 256)` tiles per axis (and at least 2).
+Only upstream graphs already eligible for regional Height evaluation are
+accepted (Mountain, Noise, and supported local processing nodes). An upstream
+global operator such as classic Erosion, a lake or drainage operation will
+be rejected before simulation. This opt-in path does **not** make arbitrary
+Hydraulic-containing graphs eligible for the ordinary `--region-tiles` mode,
+does not create meshes or EXR files, and has not yet passed 4K/8K performance
+acceptance on the target GPU/desktop.
+
 ## Current workflow
 
 - Left **Node Library**: search by node name or description; add Mountain,

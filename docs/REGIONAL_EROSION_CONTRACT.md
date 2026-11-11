@@ -166,6 +166,23 @@ equivalence, restart/continuation, optional field presence,
 corruption/truncation, cancellation cleanup, existing destination
 preservation and version rejection.
 
+## Integration with Gaia project build (experimental)
+
+The dedicated `--hydraulic-region NODE` path in `gaia-build` now chooses an
+existing Hydraulic node, preflights its upstream graph with the *restricted*
+regional Height evaluator, streams the input one world row at a time into the
+disk-backed state, executes the node's simulation settings with 2D tile-core
+ownership, and exports height/water/sediment/wear/deposits/flow as six
+overlapping PNG16 region sets. The normal `--region-tiles` operation remains
+unchanged and rejects hydraulic/global ancestors. An optional binary
+checkpoint preserves all six unquantized f32 channels. Output is staged and
+published once complete; f64 water/solid budgets are audited before publish.
+
+This does **not** establish Gaea-class simulation fidelity or production
+large-world memory/time guarantees; those require hardware benchmarks,
+visual sign-off, mixed-edge policies, and future river/lake/loose-sediment
+coupling. No all-graph large-region hydraulic support is implied.
+
 ## Narrow implementation sequence
 
 1. Extract a pure canonical interior-face flux operator from the existing
