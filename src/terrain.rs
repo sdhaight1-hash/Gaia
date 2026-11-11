@@ -220,6 +220,10 @@ impl Graph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut Node> {
+        self.nodes.iter_mut().find(|n| n.id == id)
+    }
+
     /// Connect a named source output to a typed target input.
     /// Reject invalid ports, bad slots, self-links and cyclic dependencies
     /// before modifying the graph.
