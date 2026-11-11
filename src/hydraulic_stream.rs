@@ -1,14 +1,14 @@
 //! Disk-backed, barriered hydraulic water/sediment transport in horizontal stripes.
 //!
-//! This intentionally does **not** perform rain, erosion, deposition or
-//! evaporation and is not wired to regional graph builds. It proves that one
-//! transport tick can run with O(world width) resident scalar buffers, using
-//! same-tick neighbor snapshots even across stripe boundaries.
+//! Rain, transport, erosion/deposition and evaporation can run in globally
+//! barriered ticks with O(world width) resident scalar buffers. Height slopes
+//! are evaluated from the entire **pre-erosion** tick, not an in-place scan.
+//! This module is not yet wired to regional graph builds.
 //!
 //! Temporary input/output files remain private to this state. Failed or
 //! cancelled steps discard uncommitted output and preserve the last full tick.
 use crate::hydraulic_exchange::WorldEdge;
-use crate::hydrology::{DirectedFlux, MassLedger, donor_fluxes};
+use crate::hydrology::{DirectedFlux, HydraulicParameters, MassLedger, donor_fluxes};
 use crate::region::MAX_REGION_RESOLUTION;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -28,6 +28,8 @@ pub struct DiskTransport {
     water: File,
     sediment: File,
     last_flow: Option<File>,
+    wear: Option<File>,
+    deposits: Option<File>,
 }
 
 fn scratch_file() -> Result<File, String> {
@@ -199,6 +201,110 @@ fn commit_row(
     Ok(())
 }
 
+/// Apply rock/suspended-sediment exchange from an immutable height snapshot.
+///
+/// Transport and water source accounting have already run into separate
+/// temporary files. Every row reads *old* terrain plus post-transport water,
+/// suspended mass and outgoing flow. The outputs are new temporary files.
+/// No previous height, sediment or diagnostic file is modified here.
+fn erode_rows(
+    size: usize,
+    old_height: &mut File,
+    transport_water: &mut File, transport_sediment: &mut File,
+    transport_flow: &mut File,
+    mut old_wear: Option<&mut File>, mut old_deposits: Option<&mut File>,
+    params: HydraulicParameters, ledger: &mut MassLedger,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(File, File, File, File, File), String> {
+    let mut next_height = scratch_file()?;
+    let mut next_water = scratch_file()?;
+    let mut next_sediment = scratch_file()?;
+    let mut next_wear = scratch_file()?;
+    let mut next_deposits = scratch_file()?;
+    let mut above: Option<Vec<f32>> = None;
+
+    for y in 0..size {
+        if cancelled() { return Err("Build cancelled".into()); }
+        let height = read_row(old_height, size, y)?;
+        let below = if y + 1 < size {
+            Some(read_row(old_height, size, y + 1)?)
+        } else { None };
+        let water = read_row(transport_water, size, y)?;
+        let sediment = read_row(transport_sediment, size, y)?;
+        let flow = read_row(transport_flow, size, y)?;
+        let wear = if let Some(file) = old_wear.as_mut() {
+            read_row(*file, size, y)?
+        } else { vec![0.0; size] };
+        let deposits = if let Some(file) = old_deposits.as_mut() {
+            read_row(*file, size, y)?
+        } else { vec![0.0; size] };
+
+        let mut out_height = Vec::with_capacity(size);
+        let mut out_water = Vec::with_capacity(size);
+        let mut out_sediment = Vec::with_capacity(size);
+        let mut out_wear = Vec::with_capacity(size);
+        let mut out_deposits = Vec::with_capacity(size);
+
+        for x in 0..size {
+            let h = height[x];
+            let suspended = sediment[x];
+            let mut slope = 0.0f32;
+            if x > 0 { slope = slope.max(h - height[x - 1]); }
+            if x + 1 < size { slope = slope.max(h - height[x + 1]); }
+            if let Some(row) = above.as_ref() {
+                slope = slope.max(h - row[x]);
+            }
+            if let Some(row) = below.as_ref() {
+                slope = slope.max(h - row[x]);
+            }
+            // Same capacity expression as the original CPU hydraulic solver.
+            // Unlike its in-place sweep, every slope uses unchanged old height.
+            let capacity = params.capacity
+                * (flow[x] + water[x] * 0.03)
+                * (0.04 + slope.max(0.0));
+            if !capacity.is_finite() {
+                return Err("Hydraulic erosion capacity became nonfinite".into());
+            }
+            let mut new_h = h;
+            let mut new_s = suspended;
+            let mut eroded = 0.0f32;
+            let mut deposited = 0.0f32;
+            if suspended < capacity {
+                eroded = ((capacity - suspended) * params.erosion_rate).min(h);
+                new_h -= eroded;
+                new_s += eroded;
+            } else {
+                deposited = ((suspended - capacity) * params.deposition_rate).min(suspended);
+                new_h += deposited;
+                new_s -= deposited;
+            }
+            // Evaporation follows erosion, just as in the full-world solver.
+            let loss = water[x] * params.evaporation;
+            let new_water = water[x] - loss;
+            let cumulative_wear = wear[x] + eroded;
+            let cumulative_deposits = deposits[x] + deposited;
+            if [new_h, new_s, new_water, cumulative_wear, cumulative_deposits]
+                .iter().any(|v| !v.is_finite() || *v < 0.0)
+            {
+                return Err("Hydraulic erosion produced invalid negative/nonfinite mass".into());
+            }
+            ledger.evaporated += f64::from(loss);
+            out_height.push(new_h);
+            out_water.push(new_water);
+            out_sediment.push(new_s);
+            out_wear.push(cumulative_wear);
+            out_deposits.push(cumulative_deposits);
+        }
+        write_row(&mut next_height, &out_height)?;
+        write_row(&mut next_water, &out_water)?;
+        write_row(&mut next_sediment, &out_sediment)?;
+        write_row(&mut next_wear, &out_wear)?;
+        write_row(&mut next_deposits, &out_deposits)?;
+        above = Some(height);
+    }
+    Ok((next_height, next_water, next_sediment, next_wear, next_deposits))
+}
+
 impl DiskTransport {
     /// Populate one uniquely owned world row at a time; no dense HeightField
     /// is required. All three slices must be filled with finite nonnegative
@@ -231,7 +337,10 @@ impl DiskTransport {
             write_row(&mut water, &w)?;
             write_row(&mut sediment, &s)?;
         }
-        Ok(Self { size, height, water, sediment, last_flow: None })
+        Ok(Self {
+            size, height, water, sediment, last_flow: None,
+            wear: None, deposits: None,
+        })
     }
 
     pub fn size(&self) -> usize { self.size }
@@ -269,6 +378,38 @@ impl DiskTransport {
         Ok((row.water, row.sediment, flow))
     }
 
+    /// Read committed terrain elevation and cumulative solid-transfer masks.
+    /// Prior to the first eroding step both diagnostics are all zeros.
+    pub fn solid_row(
+        &mut self, y: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), String> {
+        if y >= self.size { return Err("Row outside world".into()); }
+        let height = read_row(&mut self.height, self.size, y)?;
+        let wear = if let Some(file) = self.wear.as_mut() {
+            read_row(file, self.size, y)?
+        } else { vec![0.0; self.size] };
+        let deposits = if let Some(file) = self.deposits.as_mut() {
+            read_row(file, self.size, y)?
+        } else { vec![0.0; self.size] };
+        Ok((height, wear, deposits))
+    }
+
+    /// Audit rock plus suspended sediment without a full-world allocation.
+    /// Any true sediment export belongs in the external mass ledger, not in
+    /// cumulative wear/deposit diagnostics (which are transfers, not stocks).
+    pub fn solid_mass(&mut self) -> Result<f64, String> {
+        let mut total = 0.0f64;
+        for y in 0..self.size {
+            for value in read_row(&mut self.height, self.size, y)? {
+                total += f64::from(value);
+            }
+            for value in read_row(&mut self.sediment, self.size, y)? {
+                total += f64::from(value);
+            }
+        }
+        Ok(total)
+    }
+
     /// f64 audit over persisted snapshots. Does not load whole fields.
     pub fn mass(&mut self) -> Result<(f64, f64), String> {
         let mut water = 0.0f64;
@@ -302,6 +443,40 @@ impl DiskTransport {
         &mut self, stripe_rows: usize, boundary: WorldEdge,
         rain: f32, evaporation: f32, cancelled: impl Fn() -> bool,
     ) -> Result<MassLedger, String> {
+        self.step_inner(stripe_rows, boundary, rain, evaporation, None, cancelled)
+    }
+
+    /// Perform exactly one full rain/transport/rock-exchange/evaporation tick.
+    /// Requires iterations == 1: callers must explicitly repeat ticks and
+    /// audit mass at the desired cadence. Material exchange uses the existing
+    /// hydraulic capacity/rate model with a same-tick frozen slope snapshot.
+    ///
+    /// This is a file-backed prototype, *not* a supported regional CLI node.
+    pub fn step_eroding(
+        &mut self, stripe_rows: usize, boundary: WorldEdge,
+        params: HydraulicParameters, cancelled: impl Fn() -> bool,
+    ) -> Result<MassLedger, String> {
+        if params.iterations != 1 {
+            return Err("Disk hydraulic erosion executes exactly one tick (iterations must be 1)".into());
+        }
+        if !params.capacity.is_finite() || !(0.0..=20.0).contains(&params.capacity) ||
+            !params.erosion_rate.is_finite() || !(0.0..=1.0).contains(&params.erosion_rate) ||
+            !params.deposition_rate.is_finite() ||
+            !(0.0..=1.0).contains(&params.deposition_rate)
+        {
+            return Err("Invalid hydraulic erosion/deposition parameters".into());
+        }
+        self.step_inner(
+            stripe_rows, boundary, params.rain, params.evaporation,
+            Some(params), cancelled,
+        )
+    }
+
+    fn step_inner(
+        &mut self, stripe_rows: usize, boundary: WorldEdge,
+        rain: f32, evaporation: f32, erosion: Option<HydraulicParameters>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<MassLedger, String> {
         if stripe_rows == 0 || stripe_rows > self.size {
             return Err("Stripe height must be within 1..=world resolution".into());
         }
@@ -314,6 +489,8 @@ impl DiskTransport {
         let mut next_water = scratch_file()?;
         let mut next_sediment = scratch_file()?;
         let mut next_flow = scratch_file()?;
+        // Eroding ticks apply evaporation after rock/sediment exchange.
+        let transport_evaporation = if erosion.is_some() { 0.0 } else { evaporation };
         let mut ledger = MassLedger {
             rainfall: f64::from(rain) * (self.size * self.size) as f64,
             ..MassLedger::default()
@@ -341,7 +518,7 @@ impl DiskTransport {
                         y - 1, self.size, old, prev_prev_flux.as_deref(),
                         center_flux, Some(&donors), boundary,
                         &mut next_water, &mut next_sediment, &mut next_flow,
-                        evaporation, &mut ledger,
+                        transport_evaporation, &mut ledger,
                     )?;
                 }
                 previous = current.take();
@@ -354,12 +531,29 @@ impl DiskTransport {
             self.size - 1, self.size, previous.as_ref().unwrap(),
             prev_prev_flux.as_deref(), prev_flux.as_deref().unwrap(),
             None, boundary, &mut next_water, &mut next_sediment,
-            &mut next_flow, evaporation, &mut ledger,
+            &mut next_flow, transport_evaporation, &mut ledger,
         )?;
         if cancelled() { return Err("Build cancelled".into()); }
-        // This is the only commit point. No caller-visible partial iteration.
-        self.water = next_water;
-        self.sediment = next_sediment;
+        // Optional second barrier: transform rock + suspended solids from the
+        // pre-erosion height snapshot. All files are scratch until success.
+        if let Some(params) = erosion {
+            let (height, water, sediment, wear, deposits) = erode_rows(
+                self.size, &mut self.height,
+                &mut next_water, &mut next_sediment, &mut next_flow,
+                self.wear.as_mut(), self.deposits.as_mut(),
+                params, &mut ledger, &cancelled,
+            )?;
+            if cancelled() { return Err("Build cancelled".into()); }
+            // Infallible in-process swap: no field can expose a partial tick.
+            self.height = height;
+            self.water = water;
+            self.sediment = sediment;
+            self.wear = Some(wear);
+            self.deposits = Some(deposits);
+        } else {
+            self.water = next_water;
+            self.sediment = next_sediment;
+        }
         self.last_flow = Some(next_flow);
         Ok(ledger)
     }
@@ -562,6 +756,193 @@ mod tests {
             accumulated_evaporation - final_water;
         assert!(water_error.abs() < 0.004, "water residual: {water_error}");
         assert!((initial_sediment - final_sediment).abs() < 0.001);
+    }
+
+    /// Dense independent oracle: same-tick face transport, then rock/suspended
+    /// exchange from the frozen initial height and post-transport water.
+    fn erosion_reference(
+        h: &HeightField, w: &HeightField, s: &HeightField,
+        params: HydraulicParameters, boundary: WorldEdge,
+    ) -> (HeightField, HeightField, HeightField, HeightField, HeightField, MassLedger) {
+        let n = h.size;
+        let mut rained = w.clone();
+        for value in &mut rained.values { *value += params.rain; }
+        let transported = transport_snapshot(
+            h, &rained, s,
+            &[Region { x: 0, y: 0, width: n, height: n }],
+            boundary, || false,
+        ).unwrap();
+        let mut next_h = h.clone();
+        let mut next_w = transported.water.clone();
+        let mut next_s = transported.sediment.clone();
+        let mut wear = HeightField::flat(n, 0.0);
+        let mut deposits = HeightField::flat(n, 0.0);
+        let mut ledger = transported.ledger;
+        ledger.rainfall = f64::from(params.rain) * (n * n) as f64;
+        for y in 0..n {
+            for x in 0..n {
+                let i = y * n + x;
+                let original = h.values[i];
+                let mut slope = 0.0f32;
+                if x > 0 { slope = slope.max(original - h.values[i - 1]); }
+                if x + 1 < n { slope = slope.max(original - h.values[i + 1]); }
+                if y > 0 { slope = slope.max(original - h.values[i - n]); }
+                if y + 1 < n { slope = slope.max(original - h.values[i + n]); }
+                let target = params.capacity
+                    * (transported.flow.values[i] + transported.water.values[i] * 0.03)
+                    * (0.04 + slope.max(0.0));
+                if next_s.values[i] < target {
+                    let e = ((target - next_s.values[i]) * params.erosion_rate)
+                        .min(original);
+                    next_h.values[i] -= e;
+                    next_s.values[i] += e;
+                    wear.values[i] = e;
+                } else {
+                    let d = ((next_s.values[i] - target) * params.deposition_rate)
+                        .min(next_s.values[i]);
+                    next_h.values[i] += d;
+                    next_s.values[i] -= d;
+                    deposits.values[i] = d;
+                }
+                let loss = transported.water.values[i] * params.evaporation;
+                next_w.values[i] -= loss;
+                ledger.evaporated += f64::from(loss);
+            }
+        }
+        (next_h, next_w, next_s, wear, deposits, ledger)
+    }
+
+    #[test]
+    fn eroded_tick_matches_frozen_slope_oracle_on_all_stripe_layouts() {
+        for n in [32, 65] {
+            let (h, w, s) = fixture(n);
+            let params = HydraulicParameters {
+                iterations: 1, ..HydraulicParameters::default()
+            };
+            for boundary in [WorldEdge::Closed, WorldEdge::Open] {
+                let (expected_h, expected_w, expected_s, wear, deposits, reference_ledger) =
+                    erosion_reference(&h, &w, &s, params, boundary);
+                for stripe in [1, 3, 7, n] {
+                    let mut state = create(&h, &w, &s);
+                    let ledger = state.step_eroding(stripe, boundary, params, || false).unwrap();
+                    assert_eq!(ledger.rainfall, reference_ledger.rainfall);
+                    assert_eq!(ledger.evaporated, reference_ledger.evaporated);
+                    assert_eq!(ledger.water_outflow, reference_ledger.water_outflow);
+                    assert_eq!(ledger.sediment_outflow, reference_ledger.sediment_outflow);
+                    for y in 0..n {
+                        let range = y * n..(y + 1) * n;
+                        let (rock, wrow, drow) = state.solid_row(y).unwrap();
+                        let (water, sediment, flow) = state.transport_row(y).unwrap();
+                        assert_eq!(rock.as_slice(), &expected_h.values[range.clone()]);
+                        assert_eq!(water.as_slice(), &expected_w.values[range.clone()]);
+                        assert_eq!(sediment.as_slice(), &expected_s.values[range.clone()]);
+                        assert_eq!(wrow.as_slice(), &wear.values[range.clone()]);
+                        assert_eq!(drow.as_slice(), &deposits.values[range]);
+                        assert!(flow.unwrap().iter().all(|v| *v >= 0.0));
+                    }
+                    let solid_error = h.mass() + s.mass() - ledger.sediment_outflow
+                        - state.solid_mass().unwrap();
+                    assert!(solid_error.abs() < 0.0008, "solids residual: {solid_error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_hundred_eroding_ticks_conserve_rock_and_suspended_sediment() {
+        let (h, w, s) = fixture(32);
+        let mut state = create(&h, &w, &s);
+        let initial_solid = state.solid_mass().unwrap();
+        let (initial_water, _) = state.mass().unwrap();
+        let params = HydraulicParameters {
+            iterations: 1, ..HydraulicParameters::default()
+        };
+        let mut rain = 0.0f64;
+        let mut evaporated = 0.0f64;
+        for tick in 0..200 {
+            let ledger = state.step_eroding(
+                if tick % 2 == 0 { 3 } else { 7 },
+                WorldEdge::Closed, params, || false,
+            ).unwrap();
+            assert_eq!(ledger.water_outflow, 0.0);
+            assert_eq!(ledger.sediment_outflow, 0.0);
+            rain += ledger.rainfall;
+            evaporated += ledger.evaporated;
+        }
+        let (final_water, _) = state.mass().unwrap();
+        let final_solid = state.solid_mass().unwrap();
+        assert!((initial_water + rain - evaporated - final_water).abs() < 0.005);
+        assert!((initial_solid - final_solid).abs() < initial_solid * 0.00003);
+        let mut total_wear = 0.0f64;
+        let mut total_deposits = 0.0f64;
+        for y in 0..32 {
+            let (height, wear, deposits) = state.solid_row(y).unwrap();
+            assert!(height.iter().all(|v| *v >= 0.0 && v.is_finite()));
+            total_wear += wear.into_iter().map(f64::from).sum::<f64>();
+            total_deposits += deposits.into_iter().map(f64::from).sum::<f64>();
+        }
+        assert!(total_wear > 0.0);
+        assert!(total_deposits > 0.0);
+    }
+
+    #[test]
+    fn eroded_results_are_independent_of_stripe_height_across_ticks() {
+        let (h, w, s) = fixture(32);
+        let mut narrow = create(&h, &w, &s);
+        let mut wide = create(&h, &w, &s);
+        let params = HydraulicParameters { iterations: 1, ..Default::default() };
+        for _ in 0..24 {
+            let a = narrow.step_eroding(1, WorldEdge::Open, params, || false).unwrap();
+            let b = wide.step_eroding(11, WorldEdge::Open, params, || false).unwrap();
+            assert_eq!(a.water_outflow, b.water_outflow);
+            assert_eq!(a.sediment_outflow, b.sediment_outflow);
+            assert_eq!(a.evaporated, b.evaporated);
+        }
+        for y in 0..32 {
+            assert_eq!(narrow.transport_row(y).unwrap(), wide.transport_row(y).unwrap());
+            assert_eq!(narrow.solid_row(y).unwrap(), wide.solid_row(y).unwrap());
+        }
+    }
+
+    #[test]
+    fn cancellation_during_erosion_preserves_all_committed_fields() {
+        let (h, w, s) = fixture(32);
+        let mut state = create(&h, &w, &s);
+        let params = HydraulicParameters { iterations: 1, ..Default::default() };
+        state.step_eroding(4, WorldEdge::Open, params, || false).unwrap();
+        let before_mass = state.mass().unwrap();
+        let before_solid_mass = state.solid_mass().unwrap();
+        let before_solid_row = state.solid_row(9).unwrap();
+        let before_transport = state.transport_row(9).unwrap();
+        let count = Cell::new(0usize);
+        let err = state.step_eroding(4, WorldEdge::Closed, params, || {
+            count.set(count.get() + 1);
+            count.get() >= 40
+        }).unwrap_err();
+        assert_eq!(err, "Build cancelled");
+        assert!(count.get() >= 40);
+        assert_eq!(state.mass().unwrap(), before_mass);
+        assert_eq!(state.solid_mass().unwrap(), before_solid_mass);
+        assert_eq!(state.solid_row(9).unwrap(), before_solid_row);
+        assert_eq!(state.transport_row(9).unwrap(), before_transport);
+    }
+
+    #[test]
+    fn rejects_invalid_erosion_parameters_without_mutating_state() {
+        let (h, w, s) = fixture(32);
+        let mut state = create(&h, &w, &s);
+        let prior = state.solid_mass().unwrap();
+        for bad in [
+            HydraulicParameters::default(),
+            HydraulicParameters { iterations: 1, capacity: f32::NAN, ..Default::default() },
+            HydraulicParameters { iterations: 1, erosion_rate: -0.1, ..Default::default() },
+            HydraulicParameters { iterations: 1, deposition_rate: 1.1, ..Default::default() },
+            HydraulicParameters { iterations: 1, rain: f32::INFINITY, ..Default::default() },
+        ] {
+            assert!(state.step_eroding(4, WorldEdge::Closed, bad, || false).is_err());
+        }
+        assert_eq!(state.solid_mass().unwrap(), prior);
+        assert_eq!(state.solid_row(0).unwrap().0.as_slice(), &h.values[..32]);
     }
 
     #[test]
