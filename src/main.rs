@@ -15,6 +15,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult};
 use history::EditHistory;
+use graph_view::{GraphView, CARD_WIDTH, PORT_START, PORT_STEP};
 
 #[derive(Debug, PartialEq, Eq)]
 enum DroppedDocument {
@@ -112,6 +113,9 @@ struct GaiaApp {
     history: EditHistory,
     skip_history_record: bool,
     focus_graph_selection: bool,
+    fit_graph_requested: bool,
+    graph_view: GraphView,
+    delete_confirmation: Option<u64>,
 }
 
 impl GaiaApp {
@@ -161,6 +165,9 @@ impl GaiaApp {
             history: EditHistory::default(),
             skip_history_record: false,
             focus_graph_selection: false,
+            fit_graph_requested: true,
+            graph_view: GraphView::default(),
+            delete_confirmation: None,
         }
     }
 
@@ -372,6 +379,9 @@ impl GaiaApp {
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
                 self.focus_graph_selection = true;
+                self.fit_graph_requested = true;
+                self.wire_start = None;
+                self.delete_confirmation = None;
                 self.history.clear();
                 self.skip_history_record = true;
                 self.graph_dirty = true;
@@ -424,9 +434,78 @@ impl GaiaApp {
             self.preview_source = PortRef::height(self.project.graph.output);
         }
         self.wire_start = None;
+        self.delete_confirmation = None;
         self.graph_dirty = true;
         self.unsaved = true;
         self.status = label.to_owned();
+    }
+
+    /// Delete a free node or bypass a connected, type-compatible operator.
+    /// Otherwise request explicit confirmation before removing its consumers.
+    fn request_node_deletion(&mut self, id: u64) {
+        match self.project.graph.remove_bypass(id) {
+            Ok(()) => self.finish_node_deletion(format!("Deleted node #{id}; upstream wires reconnected")),
+            Err(error) => {
+                if self.project.graph.dependent_branch(id)
+                    .is_ok_and(|branch| branch.len() > 1)
+                {
+                    self.delete_confirmation = Some(id);
+                    self.status = format!("{error} — confirm downstream deletion or cancel");
+                } else {
+                    self.status = error;
+                }
+            }
+        }
+    }
+
+    fn finish_node_deletion(&mut self, status: String) {
+        self.selected = self.project.graph.output;
+        self.preview_source = PortRef::height(self.selected);
+        self.wire_start = None;
+        self.delete_confirmation = None;
+        self.focus_graph_selection = true;
+        self.graph_dirty = true;
+        self.unsaved = true;
+        self.status = status;
+    }
+
+    fn confirm_branch_deletion(&mut self, id: u64) {
+        match self.project.graph.remove_branch(id) {
+            Ok(removed) => self.finish_node_deletion(format!(
+                "Deleted {} connected node(s) from branch #{id}", removed.len())),
+            Err(error) => {
+                self.delete_confirmation = None;
+                self.status = error;
+            }
+        }
+    }
+
+    fn delete_confirmation_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.delete_confirmation else { return; };
+        let branch = self.project.graph.dependent_branch(id).unwrap_or_default();
+        let mut close = false;
+        egui::Window::new("Delete connected branch?")
+            .id(egui::Id::new("gaia_delete_branch_confirm"))
+            .collapsible(false).resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!("Node #{id} has downstream connections."));
+                ui.label(format!(
+                    "Deleting its branch will remove {} node(s), including their descendants.",
+                    branch.len()));
+                ui.colored_label(ui_theme::AMBER,
+                    "This is destructive. Use Undo to restore the entire graph branch.");
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() { close = true; }
+                    if ui.add(egui::Button::new("Delete branch")
+                        .fill(egui::Color32::from_rgb(112, 44, 48))).clicked()
+                    {
+                        self.confirm_branch_deletion(id);
+                        close = true;
+                    }
+                });
+            });
+        if close { self.delete_confirmation = None; }
     }
 
     fn undo_edit(&mut self) {
@@ -1126,8 +1205,8 @@ impl GaiaApp {
             }
             ui.add_space(12.0);
             if ui.add(egui::Button::new(
-                egui::RichText::new("Delete unused node").color(ui_theme::RED)
-            )).on_hover_text("Connected nodes cannot be removed until their wires are changed")
+                egui::RichText::new("Delete node…").color(ui_theme::RED)
+            )).on_hover_text("Reconnect a single-input node automatically, or confirm deleting its downstream branch")
                 .clicked()
             {
                 requested_delete = true;
@@ -1156,24 +1235,14 @@ impl GaiaApp {
             changed = true;
         }
         if requested_delete {
-            let id = self.selected;
-            match self.project.graph.remove(id) {
-                Ok(()) => {
-                    self.selected = self.project.graph.output;
-                    self.preview_source = PortRef::height(self.selected);
-                    self.wire_start = None;
-                    self.status = format!("Deleted unused node #{id}");
-                    changed = true;
-                }
-                Err(error) => self.status = error,
-            }
+            self.request_node_deletion(self.selected);
         }
         if changed {
             self.graph_dirty = true;
             self.unsaved = true;
         }
         ui.separator();
-        ui.label(egui::RichText::new("Drag from an output socket to a compatible input. Drag cards to rearrange.")
+        ui.label(egui::RichText::new("Wire outputs to same-type inputs. Delete bypasses compatible nodes or asks before removing dependent branches.")
             .size(12.0).color(ui_theme::MUTED));
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Connections are validated before rebuilding.")
@@ -1644,6 +1713,7 @@ impl eframe::App for GaiaApp {
             .frame(egui::Frame::new().fill(ui_theme::BG).inner_margin(12))
             .show(ui, |ui| self.viewport(ui));
 
+        self.delete_confirmation_dialog(&ctx);
         if !std::mem::take(&mut self.skip_history_record) {
             self.history.record_frame(
                 project_before_frame, &self.project,
