@@ -450,6 +450,12 @@ impl GaiaApp {
         self.palette_node(ui, "≈  Depression Fill",
             "Condition local pits into outlet-connected drainage; provide fill-depth map",
             NodeKind::DepressionFill { grade: 0.0001 });
+        self.palette_node(ui, "≈  Rivers",
+            "Priority-flood connected D8 river corridors with downcutting and wear masks",
+            NodeKind::Rivers {
+                catchment_fraction: 0.002, width: 3.0,
+                depth: 0.045, grade: 0.0001,
+            });
         self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
             NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
         self.palette_node(ui, "◩  Mask Levels", "Remap mask black/white points, gamma and invert",
@@ -792,6 +798,18 @@ impl GaiaApp {
                         .step_by(0.00001).text("Drainage grade")).changed();
                     ui.small("Raises enclosed pits to their lowest outlet. Positive grade makes flat cells drain; 0 preserves flat water surfaces.");
                     ui.small("Outputs: conditioned height and fill_depth (raw height units, not simulated lake water). All map edges are outlets.");
+                }
+                NodeKind::Rivers { catchment_fraction, width, depth, grade } => {
+                    changed |= ui.add(egui::Slider::new(catchment_fraction, 0.001..=0.05)
+                        .step_by(0.001).text("Catchment fraction")).changed();
+                    changed |= ui.add(egui::Slider::new(width, 0.5..=12.0)
+                        .text("Corridor width (pixels)")).changed();
+                    changed |= ui.add(egui::Slider::new(depth, 0.0..=0.5)
+                        .text("Downcutting")).changed();
+                    changed |= ui.add(egui::Slider::new(grade, 0.0..=0.01)
+                        .step_by(0.00001).text("Drainage grade")).changed();
+                    ui.small("Global priority flood + D8 network + softened channel incision. All edges are potential outlets.");
+                    ui.small("Outputs: carved Height, channels Mask, wear Mask. No water volume or sediment transport.");
                 }
                 NodeKind::MaskLevels { black, white, gamma, invert } => {
                     changed |= ui.add(egui::Slider::new(black, 0.0..=1.0)
@@ -1318,7 +1336,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
