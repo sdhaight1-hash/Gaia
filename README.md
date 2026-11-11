@@ -274,6 +274,8 @@ subdivision of an already built global graph. Peak memory in the region
 report covers live intermediate float samples; it excludes PNG encoding and
 Rust/OS overhead. No claim of fully streamed Gaea-class erosion is made.
 
+For future region-based erosion, see the [conservative regional water/sediment exchange contract](docs/REGIONAL_EROSION_CONTRACT.md). The current regional CLI explicitly rejects hydraulic erosion until its paired-flux conservation gates pass.
+
 ## Windows regional build benchmarking
 
 Run a repeatable regional build profile with process memory, elapsed time, and SHA-256 comparisons of all PNG tiles:
