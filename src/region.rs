@@ -934,6 +934,141 @@ mod tests {
             .iter().all(|&x| x == 0.0));
     }
 
+    fn material_graph() -> (Graph, u64) {
+        let mut graph = Project::default().graph;
+        let source = graph.add(NodeKind::Noise {
+            seed: 27, frequency: 5.5, amplitude: 1.0,
+        });
+        let softened = graph.add(NodeKind::Blur { radius: 2 });
+        graph.connect(softened, 0, PortRef::height(source)).unwrap();
+        let mut palette = crate::terrain::MaterialPalette::default();
+        palette.colors[1] = [0.2, 0.6, 0.35];
+        let id = graph.add_from(NodeKind::MaterialMasks {
+            sea_level: 0.22, beach_width: 0.11,
+            rock_slope: 0.34, rock_blend: 0.12,
+            snowline: 0.68, snow_blend: 0.09, palette,
+        }, &PortRef::height(softened));
+        (graph, id)
+    }
+
+    #[test]
+    fn material_outputs_match_full_grid_across_edges_and_rgba_splat_weights() {
+        let (graph, id) = material_graph();
+        for size in [32, 65, 128] {
+            for port in ["sand", "soil", "rock", "snow", "albedo", "splat"] {
+                let source = PortRef::new(id, port);
+                let full = graph.evaluate_port(size, &source).unwrap();
+                for count in [2, 3, 7] {
+                    let layout = RegionLayout::new(size, count).unwrap();
+                    let mut visited_scalar = vec![None; size*size];
+                    let mut visited_color = vec![None; size*size];
+                    for ty in 0..count {
+                        for tx in 0..count {
+                            let rect = layout.tile(tx, ty).unwrap();
+                            if matches!(full.kind, PortType::Height | PortType::Mask) {
+                                let (tile, _) = evaluate_region(&graph, size, &source, rect).unwrap();
+                                assert_eq!(tile.kind, full.kind);
+                                for y in 0..rect.height {
+                                    for x in 0..rect.width {
+                                        let i=(rect.y+y)*size+rect.x+x;
+                                        let v=tile.values[y*rect.width+x];
+                                        if let Some(old)=visited_scalar[i] {
+                                            assert_eq!(old, v, "material {port} seam");
+                                        }
+                                        visited_scalar[i]=Some(v);
+                                    }
+                                }
+                            } else {
+                                let (tile, _) = evaluate_color_region(&graph, size, &source, rect)
+                                    .unwrap();
+                                assert_eq!(tile.kind, full.kind);
+                                for y in 0..rect.height {
+                                    for x in 0..rect.width {
+                                        let i=(rect.y+y)*size+rect.x+x;
+                                        let v=tile.pixels[y*rect.width+x];
+                                        if let Some(old)=visited_color[i] {
+                                            assert_eq!(old, v, "material {port} color seam");
+                                        }
+                                        visited_color[i]=Some(v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if matches!(full.kind, PortType::Height | PortType::Mask) {
+                        for (i, observed) in visited_scalar.iter().enumerate() {
+                            let actual=observed.unwrap();
+                            assert!((actual-full.data.values[i]).abs()<=1e-6,
+                                "port={port} {size}/{count} at {i}");
+                        }
+                    } else {
+                        let reference=full.color.as_ref().unwrap();
+                        for (i, observed) in visited_color.iter().enumerate() {
+                            let actual=observed.unwrap();
+                            for channel in 0..4 {
+                                assert!((actual[channel]-reference.pixels[i][channel]).abs()
+                                    <=1e-6, "port={port} {size}/{count} at {i} channel {channel}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn material_rgba_export_is_rectangular_and_coverage_conserving() {
+        let (graph, id) = material_graph();
+        let layout=RegionLayout::new(65, 3).unwrap();
+        let (tile, stats)=evaluate_color_region(&graph,65,
+            &PortRef::new(id,"splat"),layout.tile(2,1).unwrap()).unwrap();
+        assert_eq!(tile.kind,PortType::Splat);
+        assert!(stats.peak_working_samples>=tile.pixels.len()*4);
+        for weights in &tile.pixels {
+            assert!(weights.iter().all(|v|v.is_finite() && *v>=0.0));
+            assert!((weights.iter().sum::<f32>()-1.0).abs()<1e-6);
+        }
+        let temp=tempfile::tempdir().unwrap();
+        let path=temp.path().join("splat.png");
+        tile.export_splat_rgba8(&path).unwrap();
+        let mut reader=png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(path).unwrap())).read_info().unwrap();
+        let mut bytes=vec![0_u8;reader.output_buffer_size()];
+        let info=reader.next_frame(&mut bytes).unwrap();
+        assert_eq!(info.color_type,png::ColorType::Rgba);
+        assert_eq!(info.bit_depth,png::BitDepth::Eight);
+        assert_eq!(info.width as usize,tile.region.width);
+        assert_eq!(info.height as usize,tile.region.height);
+        for rgba in bytes.chunks_exact(4) {
+            assert_eq!(rgba.iter().map(|&v|v as u16).sum::<u16>(),255);
+        }
+    }
+
+    #[test]
+    fn material_regions_are_bounded_at_4096_and_reject_invalid_thresholds() {
+        let (mut graph,id)=material_graph();
+        let rect=RegionLayout::new(4096,8).unwrap().tile(2,3).unwrap();
+        for port in ["soil","albedo","splat"] {
+            let source=PortRef::new(id,port);
+            let stats=if port=="soil" {
+                evaluate_region(&graph,4096,&source,rect).unwrap().1
+            } else {
+                evaluate_color_region(&graph,4096,&source,rect).unwrap().1
+            };
+            assert!(stats.peak_working_samples>rect.width*rect.height);
+            assert!(stats.peak_working_samples<4096*4096/4);
+        }
+        if let NodeKind::MaterialMasks { beach_width, .. }=
+            &mut graph.get_mut(id).unwrap().kind {
+            *beach_width=0.0;
+        }
+        let roi=Region{x:0,y:0,width:16,height:16};
+        assert!(evaluate_region(&graph,65,&PortRef::new(id,"sand"),roi)
+            .unwrap_err().contains("Material masks require"));
+        assert!(evaluate_color_region(&graph,65,&PortRef::new(id,"splat"),roi)
+            .unwrap_err().contains("Material masks require"));
+    }
+
     #[test]
     fn stitched_regions_match_whole_grid_for_nested_halos_and_blends() {
         let (graph, node) = sample_graph();
