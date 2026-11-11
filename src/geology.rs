@@ -248,12 +248,18 @@ mod tests {
         let n = 128;
         for roughness in [0.0, 0.7] {
             let surface = island(n, 41, 0.65, 1.0, roughness);
-            let max_step = (0..n).flat_map(|y| (0..n).flat_map(move |x| {
-                let v = surface.get(x, y);
-                let horizontal = (x + 1 < n).then(|| (v - surface.get(x + 1, y)).abs());
-                let vertical = (y + 1 < n).then(|| (v - surface.get(x, y + 1)).abs());
-                horizontal.into_iter().chain(vertical)
-            })).fold(0.0_f32, f32::max);
+            let mut max_step = 0.0_f32;
+            for y in 0..n {
+                for x in 0..n {
+                    let v = surface.get(x, y);
+                    if x + 1 < n {
+                        max_step = max_step.max((v - surface.get(x + 1, y)).abs());
+                    }
+                    if y + 1 < n {
+                        max_step = max_step.max((v - surface.get(x, y + 1)).abs());
+                    }
+                }
+            }
             assert!(max_step < 0.10,
                 "Unexpected cliff with roughness {roughness}: max cell step {max_step}");
             let center = surface.get(n / 2, n / 2);
