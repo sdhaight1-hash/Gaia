@@ -1,7 +1,7 @@
 //! Standalone deterministic terrain build tool.
 //! No window or GPU required; intended for production pipelines and CI.
 use gaia::pipeline::{GraphCache, PortRef, PortType};
-use gaia::color::{export_rgb8, export_rgba8};
+use gaia::color::{export_rgb8, export_splat_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
@@ -157,7 +157,7 @@ fn build_all_outputs(
         let stem = suffixed(&options.output, &format!(".node{}.{}", node_id, port.port))?;
         let png = suffixed(&stem, ".png")?;
         let format = if field.kind == PortType::Splat {
-            export_rgba8(field.color.as_ref().ok_or("Splat weights missing RGBA data")?, &png)?;
+            export_splat_rgba8(field.color.as_ref().ok_or("Splat weights missing RGBA data")?, &png)?;
             "RGBA8"
         } else if field.kind == PortType::Color {
             let color = field.color.as_ref()
@@ -185,7 +185,7 @@ fn build_all_outputs(
                     let file = folder.join(format!("x{tx:02}_y{ty:02}.png"));
                     if field.kind == PortType::Splat {
                         let colors = field.color.as_ref().ok_or("Splat weights missing RGBA data")?;
-                        export_rgba8(&tile_color(colors, layout, tx, ty)?, &file)?;
+                        export_splat_rgba8(&tile_color(colors, layout, tx, ty)?, &file)?;
                     } else if field.kind == PortType::Color {
                         let color = field.color.as_ref()
                             .ok_or("Color field has no RGBA source data")?;
@@ -285,7 +285,7 @@ fn build(options: Options) -> Result<(), String> {
     }
     let png = options.output.with_extension("png");
     let png_format = if field.kind == PortType::Splat {
-        export_rgba8(field.color.as_ref().ok_or("Splat weights missing RGBA data")?, &png)?;
+        export_splat_rgba8(field.color.as_ref().ok_or("Splat weights missing RGBA data")?, &png)?;
         "RGBA8"
     } else if field.kind == PortType::Color {
         let color = field.color.as_ref().ok_or("Color output has no RGBA field")?;
@@ -312,7 +312,7 @@ fn build(options: Options) -> Result<(), String> {
                 let file = directory.join(format!("x{tx:02}_y{ty:02}.png"));
                 if field.kind == PortType::Splat {
                     let colors = field.color.as_ref().ok_or("Splat weights missing RGBA data")?;
-                    export_rgba8(&tile_color(colors, layout, tx, ty)?, &file)?;
+                    export_splat_rgba8(&tile_color(colors, layout, tx, ty)?, &file)?;
                 } else if field.kind == PortType::Color {
                     let color = field.color.as_ref()
                         .ok_or("Color output has no RGBA data for tiling")?;

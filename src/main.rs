@@ -7,7 +7,7 @@ use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Node, Proje
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
-use gaia::color::{ColorField, export_rgb8, export_rgba8};
+use gaia::color::{ColorField, export_rgb8, export_splat_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -214,7 +214,7 @@ impl GaiaApp {
                     .with_extension(format!("{}.png", self.preview_source.port));
                 self.status = match if value.kind == PortType::Splat {
                     value.color.as_ref().ok_or_else(|| "Missing splat weights".to_owned())
-                        .and_then(|data| export_rgba8(data, &path))
+                        .and_then(|data| export_splat_rgba8(data, &path))
                 } else if let Some(color) = &value.color {
                     export_rgb8(color, &path)
                 } else {
@@ -247,7 +247,7 @@ impl GaiaApp {
                             .ok_or("Selected color/splat port has no RGBA data")?;
                         let tile = tile_color(color, layout, x, y)?;
                         if output.kind == PortType::Splat {
-                            export_rgba8(&tile, &path)?;
+                            export_splat_rgba8(&tile, &path)?;
                         } else {
                             export_rgb8(&tile, &path)?;
                         }

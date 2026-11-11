@@ -56,7 +56,7 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
     let stem = dir.join("out").join("layers");
     let result = Command::new(env!("CARGO_BIN_EXE_gaia-build"))
         .arg("--project").arg(&scene).arg("--output").arg(&stem)
-        .args(["--all-outputs", &material.to_string(), "--no-obj"])
+        .args(["--all-outputs", &material.to_string(), "--no-obj", "--tiles", "2"])
         .output().unwrap();
     assert!(result.status.success(), "CLI:\n{}\n{}",
         String::from_utf8_lossy(&result.stdout),
@@ -79,6 +79,29 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
     for channels in bytes.chunks_exact(4) {
         let sum: i32 = channels.iter().map(|v| i32::from(*v)).sum();
         assert_eq!(sum, 255, "packed weights must sum to exactly 255");
+    }
+    // Every tiled RGBA edge is identical after independent quantization.
+    let tiles = stem.with_file_name(format!("layers.node{material}.splat.tiles"));
+    let read_tile = |x: usize, y: usize| {
+        let file = tiles.join(format!("x{x:02}_y{y:02}.png"));
+        let mut png = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(file).unwrap())).read_info().unwrap();
+        assert_eq!(png.info().color_type, png::ColorType::Rgba);
+        let n = png.info().width as usize;
+        assert_eq!(n, png.info().height as usize);
+        let mut bytes = vec![0; png.output_buffer_size()];
+        png.next_frame(&mut bytes).unwrap();
+        (n, bytes)
+    };
+    let (n, left) = read_tile(0, 0);
+    let (_, right) = read_tile(1, 0);
+    let (_, bottom) = read_tile(0, 1);
+    for row in 0..n {
+        let offset = (row * n + n - 1) * 4;
+        assert_eq!(&left[offset..offset + 4], &right[row * n * 4..row * n * 4 + 4]);
+        let top = ((n - 1) * n + row) * 4;
+        let bottom_edge = row * 4;
+        assert_eq!(&left[top..top + 4], &bottom[bottom_edge..bottom_edge + 4]);
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -158,7 +158,8 @@ cargo run --release --bin gaia-build -- --project terrain.gaia.json --output bui
 ```
 
 Scalar builds write normalized 16-bit grayscale PNG; Color builds write
-RGB8 PNG (alpha intentionally omitted). Every single-port build writes a JSON report
+RGB8 PNG (alpha intentionally omitted). Splat outputs write RGBA8 PNG,
+using largest-remainder quantization so each pixel's four weights sum to 255. Every single-port build writes a JSON report
 of dimensions, scalar/luminance min/max/mean, selected port and export format.
 The `--all-outputs NODE` command exports all named ports of a graph node
 from one shared CPU graph cache, writing independent typed PNG16/RGB8 maps,

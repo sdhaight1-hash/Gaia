@@ -84,7 +84,7 @@ pub fn export_rgb8(field: &ColorField, path: &Path) -> Result<(), String> {
 /// Export four normalized material weights as RGBA8 splat data.
 /// Largest-remainder quantization distributes the lost fractions so the
 /// four integer channels always sum to exactly 255, including alpha.
-pub fn export_rgba8(field: &ColorField, path: &Path) -> Result<(), String> {
+pub fn export_splat_rgba8(field: &ColorField, path: &Path) -> Result<(), String> {
     if field.size == 0 || field.size.checked_mul(field.size) != Some(field.pixels.len())
         || field.pixels.iter().any(|pixel|
             pixel.iter().any(|v| !v.is_finite() || *v < 0.0))
@@ -140,7 +140,7 @@ mod tests {
             std::time::SystemTime::now().duration_since(
                 std::time::UNIX_EPOCH).unwrap().as_nanos(),
         ));
-        export_rgba8(&field, &path).unwrap();
+        export_splat_rgba8(&field, &path).unwrap();
         let mut reader = png::Decoder::new(std::io::BufReader::new(
             std::fs::File::open(&path).unwrap())).read_info().unwrap();
         assert_eq!(reader.info().color_type, png::ColorType::Rgba);
