@@ -63,8 +63,11 @@ fn validated_cores(size: usize, requested: &[Region]) -> Result<Vec<Region>, Str
     let mut cuts = vec![0usize, size];
     for core in &cores {
         core.validate(size)?;
-        if core.width.checked_mul(core.height).is_none_or(|area| area > MAX_CORE_AREA) {
-            return Err("Hydraulic tile core exceeds the 65536-sample memory budget".into());
+        if core.width > MAX_HYDRAULIC_TILE_EDGE ||
+            core.height > MAX_HYDRAULIC_TILE_EDGE ||
+            core.width.checked_mul(core.height).is_none_or(|area| area > MAX_CORE_AREA)
+        {
+            return Err("Hydraulic tile core exceeds the 256x256 memory budget".into());
         }
         cuts.push(core.y);
         cuts.push(core.y + core.height);
@@ -561,6 +564,12 @@ mod tests {
             &overlaps, WorldEdge::Closed, params, || false,
         ).unwrap_err().contains("overlap"));
         assert_eq!(state.solid_mass().unwrap(), original);
+        // A long, skinny 512x8 core must also be rejected: a pixel-area
+        // cap alone would not keep the two-sample halo bounded by 260x260.
+        assert!(validated_cores(
+            512,
+            &[Region { x: 0, y: 0, width: 512, height: 8 }],
+        ).unwrap_err().contains("budget"));
         let mut large = DiskTransport::from_rows(512, |_, h, w, s| {
             h.fill(0.5);
             w.fill(0.1);
