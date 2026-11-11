@@ -8,8 +8,9 @@ fn uv(index: usize, size: usize) -> f32 {
 }
 
 /// Land surrounded by a guaranteed ocean-level boundary.
-/// Coastline noise modulates the island radius; a smooth shore falloff
-/// avoids a hard step at sea level while the interior retains relief.
+/// Coastline noise modulates the island radius; a radial continental-shelf
+/// falloff spans the full island radius, avoiding wall-like coastal cliffs.
+/// This is a procedural shape, not a model of ocean erosion or sea levels.
 pub fn island(size: usize, seed: u32, radius: f32, height: f32, roughness: f32) -> HeightField {
     let mut out = HeightField::flat(size, 0.0);
     if size < 2 { return out; }
@@ -26,7 +27,12 @@ pub fn island(size: usize, seed: u32, radius: f32, height: f32, roughness: f32) 
             let coastal_noise = fractal(u, v, seed, 5.0);
             let shore = (radius * (1.0 + roughness * 0.35 * (coastal_noise - 0.5)))
                 .min(0.93);
-            let inland = ((shore - distance) / 0.07).clamp(0.0, 1.0);
+            // Previously the entire height fell to sea level over only 0.07
+            // radial units. At the default radius 0.65 this made an abrupt
+            // vertical cylinder (reproduced in the Windows QA recording).
+            // Distribute the falloff across the island instead: zero slope
+            // at both the coastline and the central peak.
+            let inland = ((shore - distance) / shore).clamp(0.0, 1.0);
             let mask = inland * inland * (3.0 - 2.0 * inland);
             let relief = fractal(u, v, seed.wrapping_add(97), 3.8);
             out.values[y * size + x] = height * mask * (0.3 + 0.7 * relief);
@@ -233,6 +239,30 @@ pub fn elevation_mask(input: &HeightField, low: f32, high: f32, feather: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn island_shoreline_has_no_abrupt_cylindrical_wall() {
+        // Default settings from the 128² Windows recording formerly formed
+        // a near-vertical 0.07-wide drop. Adjacent cell steps should remain
+        // small relative to a one-unit elevation at the same grid scale.
+        let n = 128;
+        for roughness in [0.0, 0.7] {
+            let surface = island(n, 41, 0.65, 1.0, roughness);
+            let max_step = (0..n).flat_map(|y| (0..n).flat_map(move |x| {
+                let v = surface.get(x, y);
+                let horizontal = (x + 1 < n).then(|| (v - surface.get(x + 1, y)).abs());
+                let vertical = (y + 1 < n).then(|| (v - surface.get(x, y + 1)).abs());
+                horizontal.into_iter().chain(vertical)
+            })).fold(0.0_f32, f32::max);
+            assert!(max_step < 0.10,
+                "Unexpected cliff with roughness {roughness}: max cell step {max_step}");
+            let center = surface.get(n / 2, n / 2);
+            let quarter = surface.get((n as f32 * 0.40) as usize, n / 2);
+            let beach = surface.get((n as f32 * 0.82) as usize, n / 2);
+            assert!(center > quarter && quarter > beach,
+                "Elevation should rise gradually from beach to interior: {center}, {quarter}, {beach}");
+        }
+    }
 
     #[test]
     fn island_has_ocean_boundary_deterministic_coastline_and_interior() {
