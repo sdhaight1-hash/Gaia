@@ -70,7 +70,7 @@ impl NodeKind {
 
     pub fn input_count(&self) -> usize {
         match self {
-            Self::Mountain { .. } | Self::Noise { .. } |
+            Self::Mountain { .. } | Self::Noise { .. } | Self::ImportHeight { .. } |
                 Self::Range { .. } | Self::Crater { .. } |
                 Self::Dunes { .. } | Self::Canyon { .. } => 0,
             Self::Blend { .. } => 2,
