@@ -274,6 +274,19 @@ subdivision of an already built global graph. Peak memory in the region
 report covers live intermediate float samples; it excludes PNG encoding and
 Rust/OS overhead. No claim of fully streamed Gaea-class erosion is made.
 
+## Windows regional build benchmarking
+
+Run a repeatable regional build profile with process memory, elapsed time, and SHA-256 comparisons of all PNG tiles:
+
+```powershell
+./scripts/benchmark-regions.ps1 -Resolution 4096 -Tiles 8 -Repeats 2
+./scripts/benchmark-regions.ps1 -Resolution 8192 -Tiles 16 -Repeats 2
+```
+
+The script compiles the headless release executable unless `-SkipBuild` is passed. It accepts `-Project` and `-Port` for authored projects, and stores PNGs, CLI reports and `benchmark.json` under a session folder in `builds/benchmarks`. Windows CI runs a small 65² two-run reproducibility smoke test.
+
+`PeakWorkingSet64` measures the running process's memory high-water mark, not GPU VRAM. Timings and memory figures are machine-dependent and should be compared on the same hardware and software build.
+
 ## Headless builds
 
 Gaia also includes a windowless CPU builder, useful for automation and
