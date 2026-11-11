@@ -197,6 +197,8 @@ impl GaiaApp {
                     } else { None };
                     self.material_color = if result.preview_kind == PortType::Color {
                         result.preview_color
+                    } else if result.preview_kind == PortType::Height {
+                        result.preview_material
                     } else { None };
                     if let Some(texture) = self.texture.as_mut() {
                         texture.set(image, egui::TextureOptions::LINEAR);

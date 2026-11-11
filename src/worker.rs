@@ -1,7 +1,7 @@
 //! Dedicated cancellable background evaluator. The GUI never waits for erosion.
 use crate::pipeline::{BlendCompute, GraphCache, PortRef, PortType};
 use crate::gpu_compute::GpuBlend;
-use crate::color::ColorField;
+use crate::color::{ColorField, altitude_palette};
 use eframe::egui_wgpu::wgpu;
 use crate::terrain::{HeightField, NodeKind, Project};
 use std::sync::{
@@ -24,6 +24,8 @@ pub struct BuildData {
     pub height: HeightField,
     pub preview: HeightField,
     pub preview_color: Option<ColorField>,
+    /// 3D-only surface tint. A selected Height port stays grayscale in 2D.
+    pub preview_material: Option<ColorField>,
     pub preview_kind: PortType,
     pub computed: usize,
     pub reused: usize,
@@ -154,10 +156,51 @@ fn build(
         (height.data.clone(), preview,
             computed + cache.stats.computed, reused + cache.stats.reused)
     };
+    // Reconcile the previously isolated surface-preview branch. Snow and
+    // water Height previews receive a GPU-only tint from their own coverage
+    // mask. Keep typed height/2D raster values and exported data unchanged.
+    let surface_tint = request.project.graph.get(request.preview.node)
+        .and_then(|node| match (&node.kind, request.preview.port.as_str()) {
+            (NodeKind::Snow { .. }, "height") =>
+                Some(("coverage", [0.93, 0.95, 0.98], 0.97)),
+            (NodeKind::Sea { .. }, "surface") =>
+                Some(("wet", [0.06, 0.20, 0.37], 0.98)),
+            (NodeKind::Lake { .. }, "surface") =>
+                Some(("coverage", [0.07, 0.24, 0.38], 0.98)),
+            _ => None,
+        });
+    let mut computed = computed;
+    let mut reused = reused;
+    let preview_material = if let Some((mask_port, tint, opacity)) = surface_tint {
+        let mask = cache.evaluate_cancellable(&request.project.graph, size,
+            &PortRef::new(request.preview.node, mask_port),
+            generation, request.generation)?;
+        computed += cache.stats.computed;
+        reused += cache.stats.reused;
+        let mut colors = altitude_palette(&render_height,
+            [0.22, 0.32, 0.28], [0.77, 0.78, 0.75], 0.55, 1.0);
+        for y in 0..size {
+            if generation.load(Ordering::Relaxed) != request.generation {
+                return Err("Build cancelled".into());
+            }
+            for x in 0..size {
+                let i = y * size + x;
+                let amount = mask.data.values[i].clamp(0.0, 1.0) * opacity;
+                for c in 0..3 {
+                    colors.pixels[i][c] = colors.pixels[i][c] * (1.0 - amount)
+                        + tint[c] * amount;
+                }
+            }
+        }
+        Some(colors)
+    } else {
+        None
+    };
     Ok(BuildData {
         height: (*render_height).clone(),
         preview: (*preview.data).clone(),
         preview_color: preview.color.as_ref().map(|rgba| (**rgba).clone()),
+        preview_material,
         preview_kind: preview.kind,
         computed,
         reused,
@@ -260,6 +303,70 @@ mod tests {
             } else {
                 assert_eq!(out.preview_kind, PortType::Mask);
             }
+        }
+    }
+
+    #[test]
+    fn snow_surface_tints_3d_only_and_does_not_change_height_or_2d_map() {
+        let mut project = Project::default();
+        project.resolution = 32;
+        let snow = project.graph.add_from(NodeKind::Snow {
+            seed: 19, snowline: 0.15, intensity: 0.2,
+            melt: 0.0, adherence: 0.7, settle: 0,
+        }, &PortRef::height(1));
+        let mask = project.graph.evaluate_port(32,
+            &PortRef::new(snow, "coverage")).unwrap();
+        let height = project.graph.evaluate_port(32, &PortRef::height(snow))
+            .unwrap();
+        let generation = AtomicU64::new(1);
+        let mut cache = GraphCache::default();
+        let result = build(&mut cache, &Request {
+            generation: 1, project, preview: PortRef::height(snow)
+        }, &generation).unwrap();
+        assert_eq!(result.height, *height.data);
+        assert_eq!(result.preview, *height.data);
+        assert_eq!(result.preview_kind, PortType::Height);
+        assert!(result.preview_color.is_none(), "2D height stays grayscale");
+        let colors = result.preview_material.unwrap();
+        let original = altitude_palette(&result.height,
+            [0.22, 0.32, 0.28], [0.77, 0.78, 0.75], 0.55, 1.0);
+        assert!(mask.data.values.iter().any(|v| *v > 0.01));
+        for i in 0..1024 {
+            let amount = mask.data.values[i].clamp(0.0, 1.0) * 0.97;
+            for c in 0..3 {
+                let expected = original.pixels[i][c] * (1.0 - amount)
+                    + [0.93, 0.95, 0.98][c] * amount;
+                assert!((colors.pixels[i][c] - expected).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn sea_and_lake_surface_tints_preserve_selected_height_mesh() {
+        let mut project = Project::default();
+        project.resolution = 32;
+        let island = project.graph.add(NodeKind::Island {
+            seed: 41, radius: 0.65, height: 1.0, roughness: 0.7,
+        });
+        let sea = project.graph.add_from(NodeKind::Sea {
+            level: 0.12, shore_width: 4, erosion: 0.2,
+        }, &PortRef::height(island));
+        let lake = project.graph.add_from(NodeKind::Lake {
+            fill_fraction: 0.8, minimum_area: 1, minimum_depth: 0.0,
+        }, &PortRef::height(island));
+        let generation = AtomicU64::new(1);
+        let mut cache = GraphCache::default();
+        for id in [sea, lake] {
+            let port = PortRef::new(id, "surface");
+            let expected = project.graph.evaluate_port(32, &port).unwrap();
+            let out = build(&mut cache, &Request {
+                generation: 1, project: project.clone(), preview: port,
+            }, &generation).unwrap();
+            assert_eq!(out.preview_kind, PortType::Height);
+            assert_eq!(out.height, *expected.data);
+            assert_eq!(out.preview, *expected.data);
+            assert!(out.preview_color.is_none());
+            assert_eq!(out.preview_material.unwrap().pixels.len(), 1024);
         }
     }
 

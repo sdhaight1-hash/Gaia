@@ -17,8 +17,9 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Active development uses stacked pull requests. Get the newest preview from
-the latest open development PR; the older `main` branch is not current.
+The verified development history was consolidated into `main`. Get the
+latest Windows preview artifact from a successful `main` GitHub Actions run.
+Development features continue on short-lived pull request branches.
 
 To compile from source:
 
@@ -52,6 +53,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   avoiding unrelated downstream erosion builds.
   Selecting a Color graph port and switching to 3D paints that RGBA map's
   RGB channels over the terrain geometry (per-vertex lighting preserved).
+  Selected Snow height, Sea surface and Lake surface also use their own
+  coverage masks for an illustrative 3D-only snow/water tint; 2D height
+  previews and exported heights remain unchanged.
 - Center **2D map**: choose any existing node output port (height,
   wear, deposits, flow, water, sediment, slope, curvature, aspect,
   drainage accumulation, channels, elevation mask, color)
