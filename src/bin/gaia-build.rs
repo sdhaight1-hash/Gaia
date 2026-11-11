@@ -178,6 +178,50 @@ mod tests {
     }
 
     #[test]
+    fn builds_scene_with_project_relative_heightmap_from_other_directory() {
+        use gaia::terrain::{HeightField, NodeKind};
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gaia-cli-import-{}-{unique}", process::id()
+        ));
+        let assets = root.join("assets");
+        let scenes = root.join("scenes");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::create_dir_all(&scenes).unwrap();
+        let image = assets.join("terrain.png");
+        export_png16(&HeightField::flat(32, 0.375), &image).unwrap();
+        let mut project = Project::default();
+        project.resolution = 32;
+        project.graph.add(NodeKind::ImportHeight {
+            path: image.to_string_lossy().into_owned(),
+            scale: 1.0,
+        });
+        let scene = scenes.join("example.gaia.json");
+        project.save(&scene).unwrap();
+
+        let stem = root.join("output").join("final");
+        build(Options {
+            project: Some(scene),
+            output: stem.clone(),
+            resolution: None,
+            selected: None,
+            demo: false,
+            no_obj: true,
+        }).unwrap();
+        assert!(stem.with_extension("png").exists());
+        let restored = gaia::import::read_heightmap(
+            &stem.with_extension("png"), 32, 1.0
+        ).unwrap();
+        assert!(restored.values.iter().all(|&v| (v - 0.375).abs() < 2e-5));
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("report.json")).unwrap()
+        ).unwrap();
+        assert_eq!(report["type"], "Height");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn builds_without_gpu_or_window() {
         let path = std::env::temp_dir().join(format!("gaia-cli-test-{}", process::id()));
         let _ = std::fs::remove_dir_all(&path);
