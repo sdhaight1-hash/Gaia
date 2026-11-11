@@ -380,6 +380,12 @@ impl GaiaApp {
                 seed: 17, spacing: 0.08, intensity: 0.8,
                 warp: 0.55, tilt: 0.15, direction: 45.0,
             });
+        self.palette_node(ui, "◫  Adjust", "Multiply, bulk, autolevel, clamp or invert heights",
+            NodeKind::Adjust {
+                multiply: 1.0, shaper: 0.0,
+                clamp_min: 0.0, clamp_max: 4.0,
+                autolevel: false, invert: false,
+            });
         self.palette_node(ui, "◎  Blur", "Soften local terrain detail",
             NodeKind::Blur { radius: 2 });
         self.palette_node(ui, "◢  Slope Mask", "Derive a typed slope mask from terrain",
@@ -639,6 +645,23 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(tilt, -1.0..=1.0).text("Tilt")).changed();
                     changed |= ui.add(egui::Slider::new(direction, 0.0..=360.0).text("Direction")).changed();
                     ui.small("Adds broken layers to the selected terrain while retaining its main relief.");
+                }
+                NodeKind::Adjust { multiply, shaper, clamp_min, clamp_max, autolevel, invert } => {
+                    changed |= ui.add(egui::Slider::new(multiply, 0.0..=4.0)
+                        .text("Multiply")).changed();
+                    changed |= ui.add(egui::Slider::new(shaper, -1.0..=1.0)
+                        .text("Bulk / Shaper")).changed();
+                    changed |= ui.add(egui::Slider::new(clamp_min, 0.0..=4.0)
+                        .text("Clamp min")).changed();
+                    changed |= ui.add(egui::Slider::new(clamp_max, 0.0..=4.0)
+                        .text("Clamp max")).changed();
+                    if *clamp_min > *clamp_max {
+                        std::mem::swap(clamp_min, clamp_max);
+                        changed = true;
+                    }
+                    changed |= ui.checkbox(autolevel, "Global Autolevel").changed();
+                    changed |= ui.checkbox(invert, "Invert normalized heights").changed();
+                    ui.small("Positive Shaper bulks mountains before erosion; Autolevel uses the entire input range.");
                 }
                 NodeKind::Blur { radius } => {
                     changed |= ui.add(egui::Slider::new(radius, 1..=8).text("Radius")).changed();
@@ -1218,7 +1241,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
