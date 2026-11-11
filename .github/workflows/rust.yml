@@ -1,0 +1,36 @@
+name: Rust CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Type-check all targets
+        run: cargo check --all-targets
+      - name: All-target tests (graph, hydrology, GPU shader, headless builds)
+        run: cargo test --all-targets
+      - name: GPU numerical comparison (skip if runner lacks adapter)
+        run: cargo test --lib gpu_matches_cpu_at_multiple_resolutions -- --ignored --nocapture
+      - name: Build Windows preview executable
+        if: runner.os == 'Windows'
+        run: cargo build --release
+      - name: Upload Windows preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaia-windows-preview
+          path: |
+            target/release/gaia.exe
+            target/release/gaia-build.exe
+          if-no-files-found: error
+          retention-days: 14

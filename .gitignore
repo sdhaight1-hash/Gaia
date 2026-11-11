@@ -1,0 +1,5 @@
+/target
+*.gaia.json
+*.obj
+*.png
+.DS_Store
