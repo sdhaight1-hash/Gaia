@@ -41,6 +41,53 @@ pub fn island(size: usize, seed: u32, radius: f32, height: f32, roughness: f32) 
     out
 }
 
+/// Locally broken sedimentary strata, preserving the original height envelope.
+/// This is an independent heightfield operator, not a physically simulated
+/// geological depositional history. Layer phase can shift with tilt and noise.
+pub fn stratify(
+    input: &HeightField, seed: u32, spacing: f32, intensity: f32,
+    warp: f32, tilt: f32, direction: f32,
+) -> HeightField {
+    let strength = intensity.clamp(0.0, 1.0);
+    if strength == 0.0 || input.size < 2 {
+        return input.clone();
+    }
+    let spacing = spacing.clamp(0.01, 0.4);
+    let warp = warp.clamp(0.0, 1.0);
+    let tilt = tilt.clamp(-1.0, 1.0);
+    let angle = direction.to_radians();
+    let (sine, cosine) = angle.sin_cos();
+    let n = input.size;
+    let mut out = input.clone();
+    for y in 0..n {
+        for x in 0..n {
+            let u = uv(x, n);
+            let v = uv(y, n);
+            let original = input.get(x, y);
+            // Zero-centered local phase offset: tilt affects the bedding
+            // direction, while low-frequency noise makes layers bend.
+            let strike = (u - 0.5) * cosine + (v - 0.5) * sine;
+            let folded = (fractal(u, v, seed, 3.5) - 0.5) * 3.0 * warp;
+            let displacement = spacing * (3.0 * tilt * strike + folded);
+            let layer = (original + displacement) / spacing;
+            let fraction = layer.rem_euclid(1.0);
+            let base = layer.floor();
+            // Long subhorizontal shelves with finite-width transitions,
+            // avoiding the mathematically vertical cliffs of hard quantization.
+            let t = ((fraction - 0.65) / 0.35).clamp(0.0, 1.0);
+            let rise = t * t * (3.0 - 2.0 * t);
+            let stepped = (base + rise) * spacing - displacement;
+            // Disjoint rock packages vary spatially and by seed, instead
+            // of imposing perfectly uniform terraces across the whole map.
+            let weather = fractal(u, v, seed.wrapping_add(213), 8.0);
+            let local_strength = strength * (0.25 + 0.75 * weather);
+            out.values[y * n + x] =
+                (original + (stepped - original) * local_strength).max(0.0);
+        }
+    }
+    out
+}
+
 pub fn mountain_range(size: usize, seed: u32, height: f32, roughness: f32) -> HeightField {
     let mut output = HeightField::flat(size, 0.0);
     let height = height.clamp(0.0, 3.0);
@@ -288,6 +335,36 @@ mod tests {
         assert!(a.values.iter().all(|value| value.is_finite() && *value >= 0.0));
         assert!(island(n, 7, 0.65, 0.0, 0.75)
             .values.iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn stratify_preserves_input_at_zero_strength_and_is_seeded() {
+        let land = mountain_range(64, 91, 0.9, 0.75);
+        assert_eq!(stratify(&land, 21, 0.08, 0.0, 0.6, 0.3, 45.0), land);
+        let a = stratify(&land, 21, 0.08, 0.85, 0.6, 0.3, 45.0);
+        let b = stratify(&land, 21, 0.08, 0.85, 0.6, 0.3, 45.0);
+        let c = stratify(&land, 22, 0.08, 0.85, 0.6, 0.3, 45.0);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, land);
+        assert!(a.values.iter().all(|v| v.is_finite() && *v >= 0.0));
+        let change = a.values.iter().zip(&land.values)
+            .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+        assert!(change <= 0.2, "stratification should refine existing relief");
+    }
+
+    #[test]
+    fn stratify_tilt_and_direction_change_layer_pattern() {
+        let field = HeightField {
+            size: 64,
+            values: (0..64).flat_map(|y| (0..64).map(move |x|
+                0.2 + 0.45 * x as f32 / 63.0 + 0.12 * y as f32 / 63.0
+            )).collect()
+        };
+        let a = stratify(&field, 21, 0.07, 0.9, 0.35, 0.65, 0.0);
+        let b = stratify(&field, 21, 0.07, 0.9, 0.35, 0.65, 90.0);
+        assert_ne!(a, b);
+        assert!(a.values.iter().all(|v| v.is_finite() && *v >= 0.0));
     }
 
     #[test]
