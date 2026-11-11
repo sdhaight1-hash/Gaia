@@ -848,7 +848,7 @@ impl eframe::App for GaiaApp {
             self.open_project();
         }
         // Leave keyboard undo inside focused text fields to egui's text editor.
-        if !ctx.wants_keyboard_input() {
+        if !ctx.egui_wants_keyboard_input() {
             if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
                 if ctx.input(|i| i.modifiers.shift) {
                     self.redo_edit();
