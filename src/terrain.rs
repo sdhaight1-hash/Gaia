@@ -52,6 +52,8 @@ impl NodeKind {
         match self {
             Self::Mountain { .. } => "Mountain",
             Self::ImportHeight { .. } => "Import heightmap",
+            Self::Colorize { .. } => "Colorize",
+            Self::ColorMixer { .. } => "Color mixer",
             Self::Range { .. } => "Mountain range",
             Self::Crater { .. } => "Crater",
             Self::Dunes { .. } => "Dunes",
