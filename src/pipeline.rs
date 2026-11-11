@@ -2,6 +2,7 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
+use crate::drainage::drainage;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -297,6 +298,10 @@ impl NodeKind {
         const COLOR: &[(&str, PortType)] = &[("color", PortType::Color)];
         const CURVATURE: &[(&str, PortType)] = &[("curvature", PortType::Mask)];
         const ASPECT: &[(&str, PortType)] = &[("aspect", PortType::Mask)];
+        const DRAINAGE: &[(&str, PortType)] = &[
+            ("accumulation", PortType::Mask),
+            ("channels", PortType::Mask),
+        ];
         const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const EROSION: &[(&str, PortType)] = &[
             ("height", PortType::Height),
@@ -318,6 +323,7 @@ impl NodeKind {
             Self::Colorize { .. } | Self::ColorMixer { .. } => COLOR,
             Self::Curvature => CURVATURE,
             Self::Aspect { .. } => ASPECT,
+            Self::Drainage { .. } => DRAINAGE,
             Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
         }
@@ -334,7 +340,7 @@ impl NodeKind {
             (Self::Colorize { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -412,6 +418,12 @@ fn evaluate_kind(
         NodeKind::Aspect { azimuth, half_width, min_slope } => NodeOutputs::default()
             .with("aspect", PortType::Mask,
                 aspect_mask(take(0), *azimuth, *half_width, *min_slope)),
+        NodeKind::Drainage { min_catchment_fraction } => {
+            let result = drainage(take(0), *min_catchment_fraction)?;
+            NodeOutputs::default()
+                .with("accumulation", PortType::Mask, result.accumulation)
+                .with("channels", PortType::Mask, result.channels)
+        },
         NodeKind::ElevationMask { low, high, feather } => NodeOutputs::default()
             .with("mask", PortType::Mask,
                 elevation_mask(take(0), *low, *high, *feather)),
@@ -502,6 +514,25 @@ mod tests {
             p.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
             restored.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
         );
+    }
+
+    #[test]
+    fn drainage_outputs_are_typed_and_can_drive_masked_blends() {
+        let mut project = Project::default();
+        let drainage = project.graph.add(NodeKind::Drainage {
+            min_catchment_fraction: 0.015,
+        });
+        let acc = project.graph.evaluate_port(32, &PortRef::new(drainage, "accumulation")).unwrap();
+        assert_eq!(acc.kind, PortType::Mask);
+        assert!(acc.data.values.iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        let channels = project.graph.evaluate_port(32, &PortRef::new(drainage, "channels")).unwrap();
+        assert_eq!(channels.kind, PortType::Mask);
+        let composite = project.graph.add(NodeKind::MaskedBlend { mix: 0.7 });
+        project.graph.connect(composite, 2, PortRef::new(drainage, "channels")).unwrap();
+        assert!(project.graph.evaluate_port(32, &PortRef::height(composite)).is_ok());
+        assert!(project.graph.connect(composite, 0,
+            PortRef::new(drainage, "accumulation")).is_err());
     }
 
     #[test]
