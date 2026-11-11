@@ -1,9 +1,9 @@
 //! Dedicated cancellable background evaluator. The GUI never waits for erosion.
 use crate::pipeline::{BlendCompute, GraphCache, PortRef, PortType};
 use crate::gpu_compute::GpuBlend;
-use crate::color::ColorField;
+use crate::color::{ColorField, altitude_palette};
 use eframe::egui_wgpu::wgpu;
-use crate::terrain::{HeightField, Project};
+use crate::terrain::{HeightField, NodeKind, Project};
 use std::sync::{
     Arc, mpsc::{self, Receiver, Sender, TryRecvError},
     atomic::{AtomicU64, Ordering},
@@ -24,6 +24,8 @@ pub struct BuildData {
     pub height: HeightField,
     pub preview: HeightField,
     pub preview_color: Option<ColorField>,
+    /// Optional procedural 3D-only color for selected Snow/Sea/Lake surfaces.
+    pub preview_material: Option<ColorField>,
     pub preview_kind: PortType,
     pub computed: usize,
     pub reused: usize,
@@ -147,10 +149,43 @@ fn build(
         (height.data.clone(), preview,
             computed + cache.stats.computed, reused + cache.stats.reused)
     };
+    let mut computed = computed;
+    let mut reused = reused;
+    // Keep height maps grayscale in 2D. Add a separate GPU-only palette when
+    // displaying a calculated Snow, Sea or Lake surface as 3D geometry.
+    let surface_tint = request.project.graph.get(request.preview.node)
+        .and_then(|node| match (&node.kind, request.preview.port.as_str()) {
+            (NodeKind::Snow { .. }, "height") =>
+                Some(("coverage", [0.93, 0.95, 0.98], 0.97)),
+            (NodeKind::Sea { .. }, "surface") =>
+                Some(("wet", [0.06, 0.20, 0.37], 0.98)),
+            (NodeKind::Lake { .. }, "surface") =>
+                Some(("coverage", [0.07, 0.24, 0.38], 0.98)),
+            _ => None,
+        });
+    let preview_material = if let Some((port, tint, opacity)) = surface_tint {
+        let mask = cache.evaluate_cancellable(&request.project.graph, size,
+            &PortRef::new(request.preview.node, port),
+            generation, request.generation)?;
+        computed += cache.stats.computed;
+        reused += cache.stats.reused;
+        let mut palette = altitude_palette(&render_height,
+            [0.22,0.32,0.28], [0.77,0.78,0.75], 0.55, 1.0);
+        for (pixel, &weight) in palette.pixels.iter_mut().zip(&mask.data.values) {
+            let t = weight.clamp(0.0,1.0) * opacity;
+            for channel in 0..3 {
+                pixel[channel] = pixel[channel]*(1.0-t)+tint[channel]*t;
+            }
+        }
+        Some(palette)
+    } else {
+        None
+    };
     Ok(BuildData {
         height: (*render_height).clone(),
         preview: (*preview.data).clone(),
         preview_color: preview.color.as_ref().map(|rgba| (**rgba).clone()),
+        preview_material,
         preview_kind: preview.kind,
         computed,
         reused,
@@ -161,6 +196,56 @@ fn build(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn snow_surface_uses_3d_material_but_retains_grayscale_height_preview() {
+        let mut project = Project::default();
+        project.resolution = 32;
+        let snow = project.graph.add_from(NodeKind::Snow {
+            seed: 19, snowline: 0.15, intensity: 0.2,
+            melt: 0.0, adherence: 0.7, settle: 0
+        }, &PortRef::height(1));
+        let gen = AtomicU64::new(1);
+        let mut cache = GraphCache::default();
+        let view = build(&mut cache, &Request {
+            generation: 1, project,
+            preview: PortRef::height(snow),
+        }, &gen).unwrap();
+        assert_eq!(view.preview_kind, PortType::Height);
+        assert!(view.preview_color.is_none(), "2D height remains grayscale");
+        let palette = view.preview_material.unwrap();
+        let center = palette.pixels[16 * 32 + 16];
+        let corner = palette.pixels[0];
+        assert!(center[2] > 0.70 && center[0] > 0.70,
+            "snow-covered summit should become pale");
+        assert!(corner[2] < center[2]);
+    }
+
+    #[test]
+    fn sea_surface_colors_inundated_samples_blue_without_modifying_height() {
+        let mut project = Project::default();
+        project.resolution = 32;
+        let island = project.graph.add(NodeKind::Island {
+            seed: 41, radius: 0.65, height: 1.0, roughness: 0.7
+        });
+        let sea = project.graph.add_from(NodeKind::Sea {
+            level: 0.12, shore_width: 4, erosion: 0.2
+        }, &PortRef::height(island));
+        let gen = AtomicU64::new(1);
+        let mut cache = GraphCache::default();
+        let view = build(&mut cache, &Request {
+            generation: 1, project: project.clone(),
+            preview: PortRef::new(sea,"surface")
+        }, &gen).unwrap();
+        let actual = project.graph.evaluate_port(32,
+            &PortRef::new(sea,"surface")).unwrap();
+        assert_eq!(view.height, *actual.data);
+        assert!(view.preview_color.is_none());
+        let color = view.preview_material.unwrap();
+        assert!(color.pixels[0][2] > color.pixels[0][1],
+            "inundated ocean corner should be blue");
+        assert!(color.pixels[0][2] > color.pixels[0][0]);
+    }
 
     #[test]
     fn worker_produces_terrain_and_selected_mask() {
