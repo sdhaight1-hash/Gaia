@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/desktop-file-drop` (stacked on preceding PRs).
+Development branch: `feat/aspect-mask` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Blur, Slope Mask,
-  Curvature, Elevation Mask, Warp, Blend and Masked Blend.
+  Curvature, Aspect Mask, Elevation Mask, Warp, Blend and Masked Blend.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. Unused nodes can be deleted in the
   right **Inspector**; nodes with dependents are protected.
@@ -39,7 +39,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
 - Center **2D map**: choose any existing node output port (height,
-  wear, deposits, flow, water, sediment, slope, curvature, elevation mask)
+  wear, deposits, flow, water, sediment, slope, curvature, aspect, elevation mask)
   and inspect the result.
 - Top toolbar: Save, Open, Undo, Redo, Export, Rebuild. `Ctrl+S`,
   `Ctrl+O`, `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
