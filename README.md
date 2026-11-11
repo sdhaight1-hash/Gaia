@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/3d-color-preview` (stacked on preceding PRs).
+Development branch: `feat/drainage-analysis` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,8 +31,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Blur, Slope Mask,
-  Curvature, Aspect Mask, Elevation Mask, Warp, Blend, Masked Blend,
-  Colorize and Color Mixer.
+  Curvature, Aspect Mask, Drainage, Elevation Mask, Warp, Blend,
+  Masked Blend, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. Unused nodes can be deleted in the
   right **Inspector**; nodes with dependents are protected.
@@ -43,7 +43,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   RGB channels over the terrain geometry (per-vertex lighting preserved).
 - Center **2D map**: choose any existing node output port (height,
   wear, deposits, flow, water, sediment, slope, curvature, aspect,
-  elevation mask, color)
+  drainage accumulation, channels, elevation mask, color)
   and inspect the result.
 - Top toolbar: Save, Open, Undo, Redo, Export, Rebuild. `Ctrl+S`,
   `Ctrl+O`, `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
@@ -69,6 +69,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Dedicated cancellable worker thread. Rapid changes supersede stale
   jobs without blocking UI interaction.
 - Conservative thermal talus relaxation with cumulative wear/deposit masks.
+- Deterministic D8 downslope drainage analysis with contributing-area ledger,
+  logarithmic accumulation mask and channel cutoff. Flats/local minima are
+  terminal outlets; no depression filling or lake simulation is implied.
 - Experimental hydraulic erosion: rain, water advection, sediment
   transport, erosion/deposition, evaporation, boundary outflow ledgers.
   Water/solids are tested for mass consistency.
@@ -131,6 +134,8 @@ adapter is available; that is **not** evidence of GPU correctness.
 `src/geology.rs` — terrain generators, warp and structural masks.
 
 `src/hydrology.rs` — conservative hydraulic erosion and mass ledgers.
+
+`src/drainage.rs` — D8 catchment-area accumulation and channel mask analysis.
 
 `src/color.rs` — typed RGBA color fields, palettes, mask mixing and RGB8 export.
 
