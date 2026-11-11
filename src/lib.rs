@@ -16,3 +16,4 @@ pub mod lakes;
 pub mod snow;
 pub mod plates;
 pub mod sea;
+pub mod lighting;
