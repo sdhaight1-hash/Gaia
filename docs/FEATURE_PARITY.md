@@ -48,6 +48,14 @@ can be consumed externally; the desktop viewport still uses the original
 full-grid preview solver. Windows target hardware UI usability and long-run
 performance must be physically verified before claiming parity.
 
+## Repeatable hydraulic region build benchmark
+
+`scripts/benchmark-hydraulic.ps1` measures process peak working set,
+elapsed wall time, water/solid mass residuals and six-channel PNG hashes
+across repeated real headless Hydraulic node builds. Windows CI has an
+automated small-world release-binary gate; a **representative 4K/8K on-target**
+workload is still required for the production-scale memory/performance gate.
+
 ## Acceptance levels
 
 - **A — Compiled:** Rust code type-checks for both supported CI platforms.
