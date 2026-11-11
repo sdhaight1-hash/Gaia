@@ -810,7 +810,7 @@ mod tests {
         ]).unwrap().unwrap()).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(
             &std::fs::read(stem.with_extension("region.tiles.json")).unwrap()).unwrap();
-        assert_eq!(manifest["type"], "Splat");
+        assert_eq!(manifest["type"], PortType::Splat.label());
         assert_eq!(manifest["format"], "RGBA8");
         assert_eq!(manifest["tile_count"], 9);
         let report: serde_json::Value = serde_json::from_slice(
