@@ -29,6 +29,11 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
     }
     assert_eq!(cache.stats.computed, 0);
     assert_eq!(cache.stats.reused, 2);
+    let albedo = cache.evaluate(&project.graph, 32,
+        &PortRef::new(material, "albedo")).unwrap();
+    assert_eq!(albedo.kind, PortType::Color);
+    assert!(albedo.color.as_ref().unwrap().pixels.iter()
+        .all(|rgba| rgba.iter().all(|v| v.is_finite())));
     for i in 0..1024 {
         assert!((masks.iter().map(|map| map.values[i]).sum::<f32>() - 1.0).abs() < 1e-5);
     }
@@ -70,6 +75,11 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
         assert_eq!(img.info().bit_depth, png::BitDepth::Sixteen);
         assert_eq!((img.info().width, img.info().height), (32, 32));
     }
+    let albedo_file = stem.with_file_name(format!("layers.node{material}.albedo.png"));
+    let image = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(albedo_file).unwrap())).read_info().unwrap();
+    assert_eq!(image.info().color_type, png::ColorType::Rgb);
+    assert_eq!(image.info().bit_depth, png::BitDepth::Eight);
     let splat_path = stem.with_file_name(format!("layers.node{material}.splat.png"));
     let mut splat = png::Decoder::new(std::io::BufReader::new(
         std::fs::File::open(splat_path).unwrap())).read_info().unwrap();

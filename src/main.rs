@@ -952,7 +952,7 @@ impl GaiaApp {
                         .text("Snowline")).changed();
                     changed |= ui.add(egui::Slider::new(snow_blend, 0.001..=0.5)
                         .text("Snow fade")).changed();
-                    ui.small("Four normalized masks plus an RGBA splat map (R sand, G soil, B rock, A snow). Export as PNG16 layers or RGBA8 packed weights.");
+                    ui.small("Outputs: sand/soil/rock/snow Mask, RGBA8 splat weights and a baked RGB8 albedo map (no lighting or detail textures).");
                     ui.collapsing("Material appearance (3D PBR)", |ui| {
                         changed |= ui.add(egui::Slider::new(&mut palette.detail_scale, 1.0..=24.0)
                             .text("Texture repeats")).changed();

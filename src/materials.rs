@@ -1,5 +1,6 @@
 //! Static four-way terrain material classification, not a PBR shader.
-use crate::{pipeline::slope, terrain::HeightField};
+use crate::{pipeline::slope, color::ColorField,
+    terrain::{HeightField, MaterialPalette}};
 
 pub struct MaterialFields {
     pub sand: HeightField,
@@ -65,6 +66,44 @@ pub fn classify_materials(
     Ok(fields)
 }
 
+/// Bake a 2D base albedo from four normalized material masks and editable
+/// palette colors. This does not apply triplanar microtexture or scene lighting.
+pub fn bake_base_albedo(
+    fields: &MaterialFields, palette: &MaterialPalette,
+) -> Result<ColorField, String> {
+    if palette.colors.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("Material palette colors must be finite".into());
+    }
+    let n = fields.sand.size;
+    let maps = [&fields.sand, &fields.soil, &fields.rock, &fields.snow];
+    if n == 0 || n.checked_mul(n).is_none_or(|count|
+        maps.iter().any(|map| map.size != n || map.values.len() != count))
+    {
+        return Err("Material albedo needs matching square coverage masks".into());
+    }
+    let colors = palette.gpu_layers();
+    let mut output = ColorField::flat(n, [0.0, 0.0, 0.0, 1.0]);
+    for (i, pixel) in output.pixels.iter_mut().enumerate() {
+        let weights = [
+            fields.sand.values[i], fields.soil.values[i],
+            fields.rock.values[i], fields.snow.values[i],
+        ];
+        if weights.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return Err("Material coverage must be finite and nonnegative".into());
+        }
+        let total: f32 = weights.iter().sum();
+        if total <= 0.0 {
+            return Err("Material coverage must not be empty".into());
+        }
+        for channel in 0..3 {
+            pixel[channel] = (0..4)
+                .map(|layer| colors[layer][channel] * weights[layer])
+                .sum::<f32>() / total;
+        }
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +111,29 @@ mod tests {
     fn run(field: &HeightField) -> MaterialFields {
         classify_materials(field, 0.25, 0.08, 0.32, 0.10,
             0.8, 0.12, || false).unwrap()
+    }
+
+    #[test]
+    fn baked_albedo_matches_four_materials_and_preserves_alpha() {
+        let palette = MaterialPalette::default();
+        for (height, index) in [(0.15, 0), (0.5, 1), (1.0, 3)] {
+            let map = run(&HeightField::flat(32, height));
+            let color = bake_base_albedo(&map, &palette).unwrap();
+            assert_eq!(&color.pixels[123][..3], &palette.colors[index]);
+            assert_eq!(color.pixels[123][3], 1.0);
+        }
+        let mut map = run(&HeightField::flat(32, 0.5));
+        map.soil.values[10] = 0.2;
+        map.rock.values[10] = 0.8;
+        let color = bake_base_albedo(&map, &palette).unwrap();
+        for channel in 0..3 {
+            let expected = palette.colors[1][channel] * 0.2
+                + palette.colors[2][channel] * 0.8;
+            assert!((color.pixels[10][channel] - expected).abs() < 1e-6);
+        }
+        let mut invalid = palette.clone();
+        invalid.colors[0][0] = f32::NAN;
+        assert!(bake_base_albedo(&map, &invalid).is_err());
     }
 
     #[test]

@@ -127,7 +127,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   independently of the graph's exported Sunlight mask.
 - Surface Material Masks node gives four mutually normalized coverage fields
   (sand, soil, rock, snow) from elevation and slope. Outputs can drive typed
-  Color Mixers or independent PNG16 material-layer exports. The same node
+  Color Mixers or independent PNG16 material-layer exports. A companion
+  albedo Color port bakes the four edited material colors to RGB8 without
+  scene lighting, triplanar detail or roughness. The same node
   also exposes a typed RGBA8 splat output (R=sand, G=soil, B=rock, A=snow)
   with a false-color preview and tiled/headless export.
 - Derived AO and Sunlight maps: eight-direction horizon occlusion and

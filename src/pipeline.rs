@@ -12,7 +12,7 @@ use crate::snow::accumulate_snow;
 use crate::plates::plates;
 use crate::sea::coast;
 use crate::lighting::{ambient_occlusion, sunlight};
-use crate::materials::classify_materials;
+use crate::materials::{classify_materials, bake_base_albedo};
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -358,6 +358,7 @@ impl NodeKind {
             ("sand", PortType::Mask), ("soil", PortType::Mask),
             ("rock", PortType::Mask), ("snow", PortType::Mask),
             ("splat", PortType::Splat),
+            ("albedo", PortType::Color),
         ];
         const AO: &[(&str, PortType)] = &[("ao", PortType::Mask)];
         const SUNLIGHT: &[(&str, PortType)] = &[("light", PortType::Mask)];
@@ -572,7 +573,7 @@ fn evaluate_kind(
                 .with("shore", PortType::Mask, fields.shore)
                 .with("beach", PortType::Mask, fields.beach)
         },
-        NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend, .. } => {
+        NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend, palette } => {
             let field = classify_materials(take(0), *sea_level, *beach_width,
                 *rock_slope, *rock_blend, *snowline, *snow_blend, &cancelled)?;
             // Pack the same four normalized masks into one lossless-structure
@@ -584,12 +585,14 @@ fn evaluate_kind(
                     field.rock.values[i], field.snow.values[i],
                 ]).collect(),
             };
+            let albedo = bake_base_albedo(&field, palette)?;
             NodeOutputs::default()
                 .with("sand", PortType::Mask, field.sand)
                 .with("soil", PortType::Mask, field.soil)
                 .with("rock", PortType::Mask, field.rock)
                 .with("snow", PortType::Mask, field.snow)
                 .with_splat("splat", splat)
+                .with_color("albedo", albedo)
         },
         NodeKind::AmbientOcclusion { radius, strength } => {
             NodeOutputs::default().with("ao", PortType::Mask,
