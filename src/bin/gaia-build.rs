@@ -1,6 +1,7 @@
 //! Standalone deterministic terrain build tool.
 //! No window or GPU required; intended for production pipelines and CI.
 use gaia::pipeline::{PortRef, PortType};
+use gaia::color::export_rgb8;
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
 use std::{env, path::PathBuf, process, time::Instant};
@@ -14,7 +15,8 @@ Examples:
   gaia-build --project terrain.gaia.json --output builds/wear --port 2:wear --no-obj
   gaia-build --demo --output builds/sample --resolution 256
 
-Exports normalized PNG16 and, for height outputs, OBJ. Writes STEM.report.json.
+Exports PNG16 for scalar fields, RGB8 for Color fields, and OBJ for height outputs.
+Writes STEM.report.json.
 N must be 32 through 512 (current in-memory engine limit).
 "#;
 
@@ -99,7 +101,14 @@ fn build(options: Options) -> Result<(), String> {
         }
     }
     let png = options.output.with_extension("png");
-    export_png16(&field.data, &png)?;
+    let png_format = if field.kind == PortType::Color {
+        let color = field.color.as_ref().ok_or("Color output has no RGBA field")?;
+        export_rgb8(color, &png)?;
+        "RGB8"
+    } else {
+        export_png16(&field.data, &png)?;
+        "Grayscale16"
+    };
     let mut obj = None;
     if !options.no_obj && field.kind == PortType::Height {
         let file = options.output.with_extension("obj");
@@ -121,9 +130,17 @@ fn build(options: Options) -> Result<(), String> {
         "min_raw": min,
         "max_raw": max,
         "mean_raw": sum / field.data.values.len() as f64,
-        "png16": png.display().to_string(),
+        "png": png.display().to_string(),
+        "png_format": png_format,
+        "png16": if png_format == "Grayscale16" { Some(png.display().to_string()) } else { None },
+        "rgb8": if png_format == "RGB8" { Some(png.display().to_string()) } else { None },
+        "statistics_channel": if png_format == "RGB8" { "Rec709 luminance proxy" } else { "raw scalar" },
         "obj": obj,
-        "png_normalization": "clamp raw values to [0,1] and multiply by 65535",
+        "png_normalization": if png_format == "RGB8" {
+            "clamp RGB channels to [0,1] and multiply by 255; discard alpha"
+        } else {
+            "clamp raw values to [0,1] and multiply by 65535"
+        },
         "duration_ms": started.elapsed().as_millis(),
     });
     let report_path = options.output.with_extension("report.json");
@@ -175,6 +192,48 @@ mod tests {
         ]).unwrap().unwrap();
         assert_eq!(options.selected.unwrap(), PortRef::new(2, "wear"));
         assert!(options.no_obj);
+    }
+
+    #[test]
+    fn headless_color_port_exports_real_rgb8_not_luminance_png16() {
+        use gaia::terrain::NodeKind;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gaia-cli-rgb-{}-{unique}", process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project = Project::default();
+        project.resolution = 32;
+        let color_id = project.graph.add(NodeKind::Colorize {
+            low: [1.0, 0.0, 0.0],
+            high: [1.0, 0.0, 0.0],
+            midpoint: 0.5, contrast: 1.0,
+        });
+        let stem = root.join("terrain_color");
+        let scene = root.join("color.gaia.json");
+        project.save(&scene).unwrap();
+        build(Options {
+            project: Some(scene), output: stem.clone(),
+            resolution: None, selected: Some(PortRef::new(color_id, "color")),
+            demo: false, no_obj: false,
+        }).unwrap();
+        let file = std::fs::File::open(stem.with_extension("png")).unwrap();
+        let reader = png::Decoder::new(std::io::BufReader::new(file));
+        let mut png = reader.read_info().unwrap();
+        let mut buffer = vec![0; png.output_buffer_size()];
+        let info = png.next_frame(&mut buffer).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        assert_eq!(&buffer[0..3], &[255, 0, 0]);
+        assert!(!stem.with_extension("obj").exists());
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("report.json")).unwrap()
+        ).unwrap();
+        assert_eq!(report["png_format"], "RGB8");
+        assert_eq!(report["type"], "Color");
+        assert!(report["png16"].is_null());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
