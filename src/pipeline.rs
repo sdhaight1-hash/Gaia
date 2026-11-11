@@ -6,7 +6,7 @@ use crate::drainage::drainage;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
-use crate::geology::{island, mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask, stratify};
+use crate::geology::{island, volcano, mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask, stratify};
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
@@ -333,7 +333,7 @@ impl NodeKind {
 
     pub fn input_type(&self, slot: usize) -> Option<PortType> {
         match (self, slot) {
-            (Self::Mountain { .. } | Self::Island { .. } |
+            (Self::Mountain { .. } | Self::Island { .. } | Self::Volcano { .. } |
              Self::Noise { .. } | Self::ImportHeight { .. } |
              Self::Range { .. } | Self::Crater { .. } |
              Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
@@ -369,6 +369,10 @@ fn evaluate_kind(
         NodeKind::Island { seed, radius, height, roughness } =>
             NodeOutputs::default().with("height", PortType::Height,
                 island(size, *seed, *radius, *height, *roughness)),
+        NodeKind::Volcano { seed, radius, height, mouth, bulk, roughness, center_x, center_y } =>
+            NodeOutputs::default().with("height", PortType::Height,
+                volcano(size, *seed, *radius, *height, *mouth, *bulk,
+                    *roughness, *center_x, *center_y)),
         NodeKind::ImportHeight { path, scale } => NodeOutputs::default()
             .with("height", PortType::Height, read_heightmap(Path::new(path), size, *scale)?),
         NodeKind::Colorize { low, high, midpoint, contrast } =>
@@ -517,6 +521,32 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn volcano_routes_into_stratify_and_hydrology_and_roundtrips() {
+        let mut p = Project::default();
+        let source = p.graph.add(NodeKind::Volcano {
+            seed: 42, radius: 0.36, height: 0.8, mouth: 0.27,
+            bulk: 0.5, roughness: 0.4, center_x: 0.5, center_y: 0.5,
+        });
+        let layer = p.graph.add_from(NodeKind::Stratify {
+            seed: 17, spacing: 0.07, intensity: 0.6, warp: 0.4,
+            tilt: 0.2, direction: 20.0,
+        }, &PortRef::height(source));
+        let output = p.graph.evaluate_port(32, &PortRef::height(layer)).unwrap();
+        assert_eq!(output.kind, PortType::Height);
+        let scene: Project = serde_json::from_str(
+            &serde_json::to_string(&p).unwrap()
+        ).unwrap();
+        assert_eq!(output.data, scene.graph.evaluate_port(
+            32, &PortRef::height(layer)
+        ).unwrap().data);
+        let drainage = p.graph.add_from(NodeKind::Drainage {
+            min_catchment_fraction: 0.02,
+        }, &PortRef::height(layer));
+        assert!(p.graph.evaluate_port(32,
+            &PortRef::new(drainage, "channels")).is_ok());
+    }
 
     #[test]
     fn stratify_renders_in_graph_and_roundtrips_json() {
