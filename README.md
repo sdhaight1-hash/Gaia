@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/mask-levels` (stacked on preceding PRs).
+Development branch: `feat/context-aware-node-creation` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -34,7 +34,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   Curvature, Aspect Mask, Drainage, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
-  output and input sockets directly. Unused nodes can be deleted in the
+  output and input sockets directly. When adding a node, Gaia connects its
+  first compatible input to the selected output port and places it beside the
+  source (avoiding occupied cards). Unused nodes can be deleted in the
   right **Inspector**; nodes with dependents are protected.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
