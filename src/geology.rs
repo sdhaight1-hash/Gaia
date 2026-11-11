@@ -143,6 +143,51 @@ pub fn curvature(input: &HeightField) -> HeightField {
     output
 }
 
+/// Cardinal-facing slope mask. Azimuth is clockwise from grid north
+/// (negative image Y): 0° north, 90° east, 180° south, 270° west.
+/// A flat surface has no aspect and always yields zero.
+/// 'half_width_degrees' is the angular distance at which the mask reaches zero.
+pub fn aspect_mask(
+    input: &HeightField, azimuth_degrees: f32,
+    half_width_degrees: f32, min_slope: f32,
+) -> HeightField {
+    let n = input.size;
+    let mut out = HeightField::flat(n, 0.0);
+    if n < 2 || !azimuth_degrees.is_finite()
+        || !half_width_degrees.is_finite() || !min_slope.is_finite()
+        || !(0.0..=360.0).contains(&azimuth_degrees)
+        || !(1.0..=180.0).contains(&half_width_degrees)
+        || !(0.0..=2.0).contains(&min_slope)
+    {
+        return out;
+    }
+    let target = azimuth_degrees.to_radians();
+    let width = half_width_degrees.to_radians();
+    let world_scale = (n - 1) as f32;
+    for y in 0..n {
+        let up = y.saturating_sub(1);
+        let down = (y + 1).min(n - 1);
+        for x in 0..n {
+            let left = x.saturating_sub(1);
+            let right = (x + 1).min(n - 1);
+            let dx = (input.get(right, y) - input.get(left, y))
+                * world_scale / (right - left) as f32;
+            let dy = (input.get(x, down) - input.get(x, up))
+                * world_scale / (down - up) as f32;
+            let slope = dx.hypot(dy);
+            if !slope.is_finite() || slope <= min_slope || slope <= 1e-7 {
+                continue;
+            }
+            // Downhill direction (-dx,-dy), measured clockwise from north.
+            let facing = (-dx).atan2(dy);
+            let distance = (facing - target).sin().atan2((facing - target).cos()).abs();
+            let proximity = (1.0 - distance / width).clamp(0.0, 1.0);
+            out.values[y * n + x] = proximity * proximity * (3.0 - 2.0 * proximity);
+        }
+    }
+    out
+}
+
 pub fn elevation_mask(input: &HeightField, low: f32, high: f32, feather: f32) -> HeightField {
     let low = low.clamp(0.0, 1.0);
     let high = high.clamp(low, 2.0);
@@ -181,6 +226,48 @@ mod tests {
     fn zero_warp_returns_original_grid() {
         let f = dunes(64, 1, 9.0, 1.0);
         assert_eq!(warp(&f, 8, 3.0, 0.0), f);
+    }
+
+    #[test]
+    fn aspect_mask_follows_downhill_cardinal_direction() {
+        let n = 32;
+        let plane = HeightField {
+            size: n,
+            // Rising east means the downhill slope faces west.
+            values: (0..n).flat_map(|_| (0..n).map(|x| x as f32 / (n - 1) as f32)).collect(),
+        };
+        let west = aspect_mask(&plane, 270.0, 60.0, 0.01);
+        let east = aspect_mask(&plane, 90.0, 60.0, 0.01);
+        assert!(west.values.iter().all(|&v| (v - 1.0).abs() < 1e-6));
+        assert!(east.values.iter().all(|&v| v == 0.0));
+
+        let north = HeightField {
+            size: n,
+            // Rising toward bottom of image means downhill north.
+            values: (0..n).flat_map(|y| (0..n).map(move |_| y as f32 / (n - 1) as f32)).collect(),
+        };
+        assert!(aspect_mask(&north, 0.0, 45.0, 0.01)
+            .values.iter().all(|&v| (v - 1.0).abs() < 1e-6));
+        assert!(aspect_mask(&north, 180.0, 45.0, 0.01)
+            .values.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn aspect_mask_is_bounded_flat_safe_and_wraps_at_north() {
+        let flat = HeightField::flat(32, 0.4);
+        assert!(aspect_mask(&flat, 35.0, 45.0, 0.0)
+            .values.iter().all(|&v| v == 0.0));
+        let n = 32;
+        let plane = HeightField {
+            size: n,
+            values: (0..n).flat_map(|y| (0..n).map(move |x| {
+                (y as f32 - x as f32 * 0.01) / (n - 1) as f32
+            })).collect(),
+        };
+        let mask = aspect_mask(&plane, 359.0, 40.0, 0.0);
+        assert!(mask.values.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        assert!(mask.get(16, 16) > 0.9);
+        assert_eq!(aspect_mask(&plane, 359.0, 40.0, 2.0).mass(), 0.0);
     }
 
     #[test]
