@@ -390,6 +390,37 @@ impl Graph {
         Ok(removed)
     }
 
+    /// Delete several selected nodes and every dependent branch atomically.
+    /// This operation is deliberately explicit: because graph inputs are
+    /// required, deleting a source also deletes downstream consumers.
+    pub fn remove_branches(
+        &mut self, selected: &std::collections::BTreeSet<u64>,
+    ) -> Result<Vec<u64>, String> {
+        if selected.is_empty() {
+            return Err("No nodes selected for deletion".into());
+        }
+        let mut victims = std::collections::HashSet::new();
+        for &id in selected {
+            victims.extend(self.dependent_branch(id)?);
+        }
+        let kept: Vec<Node> = self.nodes.iter()
+            .filter(|node| !victims.contains(&node.id)).cloned().collect();
+        let output = if victims.contains(&self.output) {
+            kept.iter().rev().find(|node| node.kind.output_ports().iter()
+                .any(|(port, ty)| *port == "height" &&
+                    *ty == crate::pipeline::PortType::Height))
+                .map(|node| node.id)
+                .ok_or("Cannot delete selection: no height source would remain")?
+        } else {
+            self.output
+        };
+        let ordered = self.nodes.iter().filter(|node| victims.contains(&node.id))
+            .map(|node| node.id).collect();
+        self.nodes = kept;
+        self.output = output;
+        Ok(ordered)
+    }
+
     /// Visual card bounds for collision avoidance. Must track the editor's
     /// graph_view card metrics (194 width; 65 + ports*22 height).
     fn card_visual_height(node: &Node) -> f32 {
@@ -1030,6 +1061,35 @@ mod tests {
             }
             assert!(graph.evaluate_port(32, &PortRef::height(id)).is_ok());
         }
+    }
+
+    #[test]
+    fn selected_branch_deletion_is_atomic_and_preserves_unrelated_nodes() {
+        use std::collections::BTreeSet;
+        let mut graph = Project::default().graph;
+        let independent = graph.add(NodeKind::Noise {
+            seed: 11, frequency: 4.0, amplitude: 0.4,
+        });
+        let independent_child = graph.add_from(NodeKind::Blur { radius: 2 },
+            &PortRef::height(independent));
+        let before = serde_json::to_string(&graph).unwrap();
+        assert!(graph.remove_branches(&BTreeSet::from([1, independent])).is_err());
+        assert_eq!(before, serde_json::to_string(&graph).unwrap());
+        let gone = graph.remove_branches(&BTreeSet::from([1])).unwrap();
+        assert!(gone.contains(&1) && gone.contains(&2) && gone.contains(&3));
+        assert!(!gone.contains(&independent) && !gone.contains(&independent_child));
+        assert_eq!(graph.output, independent_child);
+        assert!(graph.evaluate(32).is_ok());
+    }
+
+    #[test]
+    fn selection_deletion_rejects_missing_ids_without_partial_changes() {
+        use std::collections::BTreeSet;
+        let mut graph = Project::default().graph;
+        let before = serde_json::to_vec(&graph).unwrap();
+        assert!(graph.remove_branches(&BTreeSet::from([2, 999])).is_err());
+        assert_eq!(before, serde_json::to_vec(&graph).unwrap());
+        assert!(graph.remove_branches(&BTreeSet::new()).is_err());
     }
 
     #[test]

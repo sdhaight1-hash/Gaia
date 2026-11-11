@@ -72,6 +72,15 @@ See \`src/terrain.rs\` persistence tests.
   **Find** (Home) to center the selected node at a readable zoom;
   the +/− buttons zoom around the viewport center. Graph navigation does
   not alter serialized node positions.
+  **Ctrl/Shift-click** adds or removes cards from a multi-selection;
+  **Ctrl-drag the empty canvas** selects cards inside a marquee, and Ctrl+A
+  selects every node while graph has focus. Drag a selected card header to
+  move the group in one undoable gesture. **Delete…** asks for confirmation
+  before removing all selected nodes and any downstream consumers; it refuses
+  to remove the last Height source. Right-click an input socket to select
+  a compatible upstream output directly, or click the input then click an
+  output to replace its cable. Inputs currently require a source: arbitrary
+  disconnected sockets are not supported.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.

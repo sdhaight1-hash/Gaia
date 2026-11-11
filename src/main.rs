@@ -1,5 +1,6 @@
 mod gpu;
 mod graph_view;
+mod graph_edit;
 mod material_texture;
 mod ui_theme;
 mod history;
@@ -13,6 +14,7 @@ use gaia::color::{ColorField, export_rgb8, export_splat_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult};
 use history::EditHistory;
 use graph_view::{GraphView, CARD_WIDTH, PORT_START, PORT_STEP};
@@ -121,7 +123,11 @@ struct GaiaApp {
     texture: Option<egui::TextureHandle>,
     preview_source: PortRef,
     selected: u64,
+    selected_nodes: BTreeSet<u64>,
     wire_start: Option<PortRef>,
+    wire_target: Option<(u64, usize)>,
+    marquee_start: Option<egui::Pos2>,
+    multi_delete_pending: bool,
     wire_dragging: bool,
     filename: String,
     node_search: String,
@@ -168,7 +174,11 @@ impl GaiaApp {
         ));
         Self {
             selected: project.graph.output,
+            selected_nodes: BTreeSet::from([project.graph.output]),
             wire_start: None,
+            wire_target: None,
+            marquee_start: None,
+            multi_delete_pending: false,
             wire_dragging: false,
             project,
             field,
@@ -405,6 +415,10 @@ impl GaiaApp {
                 // including the filename (also used by future exports).
                 self.filename = path.to_string_lossy().into_owned();
                 self.selected = project.graph.output;
+                self.selected_nodes = BTreeSet::from([self.selected]);
+                self.wire_target = None;
+                self.marquee_start = None;
+                self.multi_delete_pending = false;
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
                 self.focus_graph_selection = true;
@@ -454,8 +468,12 @@ impl GaiaApp {
     }
 
     fn after_history_restore(&mut self, label: &str) {
+        self.selected_nodes.retain(|id| self.project.graph.get(*id).is_some());
         if self.project.graph.get(self.selected).is_none() {
             self.selected = self.project.graph.output;
+        }
+        if self.selected_nodes.is_empty() {
+            self.selected_nodes.insert(self.selected);
         }
         let preview_still_exists = self.project.graph.get(self.preview_source.node)
             .is_some_and(|node| node.kind.output_ports().iter()
@@ -465,6 +483,9 @@ impl GaiaApp {
         }
         self.wire_start = None;
         self.wire_dragging = false;
+        self.wire_target = None;
+        self.marquee_start = None;
+        self.multi_delete_pending = false;
         self.delete_confirmation = None;
         self.graph_dirty = true;
         self.unsaved = true;
@@ -491,6 +512,10 @@ impl GaiaApp {
 
     fn finish_node_deletion(&mut self, status: String) {
         self.selected = self.project.graph.output;
+        self.selected_nodes = BTreeSet::from([self.selected]);
+        self.wire_target = None;
+        self.marquee_start = None;
+        self.multi_delete_pending = false;
         self.preview_source = PortRef::height(self.selected);
         self.wire_start = None;
         self.wire_dragging = false;
@@ -512,7 +537,50 @@ impl GaiaApp {
         }
     }
 
+    fn request_selected_deletion(&mut self) {
+        if self.selected_nodes.len() > 1 {
+            self.multi_delete_pending = true;
+        } else {
+            self.request_node_deletion(self.selected);
+        }
+    }
+
     fn delete_confirmation_dialog(&mut self, ctx: &egui::Context) {
+        if self.multi_delete_pending {
+            let selected = self.selected_nodes.clone();
+            let mut affected = BTreeSet::new();
+            for &id in &selected {
+                if let Ok(ids) = self.project.graph.dependent_branch(id) {
+                    affected.extend(ids);
+                }
+            }
+            let mut close = false;
+            egui::Window::new("Delete selected graph branches?")
+                .id(egui::Id::new("gaia_delete_multiple_confirm"))
+                .collapsible(false).resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!("{} selected node(s), {} node(s) affected including dependents.",
+                        selected.len(), affected.len()));
+                    ui.colored_label(ui_theme::AMBER,
+                        "Connected descendants will also be removed. Undo can restore them.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() { close = true; }
+                        if ui.add(egui::Button::new("Delete selected branches")
+                            .fill(egui::Color32::from_rgb(112, 44, 48))).clicked()
+                        {
+                            match self.project.graph.remove_branches(&selected) {
+                                Ok(gone) => self.finish_node_deletion(format!(
+                                    "Deleted {} graph nodes", gone.len())),
+                                Err(error) => self.status = format!("Deletion rejected: {error}"),
+                            }
+                            close = true;
+                        }
+                    });
+                });
+            if close { self.multi_delete_pending = false; }
+            return;
+        }
         let Some(id) = self.delete_confirmation else { return; };
         let branch = self.project.graph.dependent_branch(id).unwrap_or_default();
         let mut close = false;
@@ -603,6 +671,7 @@ impl GaiaApp {
             | NodeKind::Sunlight { .. } | NodeKind::MaterialMasks { .. });
         let source = self.preview_source.clone();
         self.selected = self.project.graph.add_from(kind, &source);
+        self.selected_nodes = BTreeSet::from([self.selected]);
         self.focus_graph_selection = true;
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
@@ -1272,7 +1341,7 @@ impl GaiaApp {
             changed = true;
         }
         if requested_delete {
-            self.request_node_deletion(self.selected);
+            self.request_selected_deletion();
         }
         if changed {
             self.graph_dirty = true;
@@ -1317,9 +1386,18 @@ impl GaiaApp {
             .any(|n| self.graph_view.node_rect(rect, n).contains(p)));
         let middle = ui.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
         let space = ui.input(|i| i.key_down(egui::Key::Space));
+        let additive = ui.input(|i| i.modifiers.command || i.modifiers.shift);
+        if pointer_inside && additive && !on_node
+            && background.dragged_by(egui::PointerButton::Primary)
+            && self.marquee_start.is_none()
+        {
+            self.marquee_start = Some(ui.input(|i| i.pointer.press_origin())
+                .or(pointer).unwrap_or(rect.center()));
+        }
         if pointer_inside && (middle
             || (space && ui.input(|i| i.pointer.primary_down()))
-            || (!on_node && background.dragged_by(egui::PointerButton::Primary)))
+            || (!on_node && !additive && self.marquee_start.is_none()
+                && background.dragged_by(egui::PointerButton::Primary)))
             && self.wire_start.is_none()
         {
             self.graph_view.pan += ui.input(|i| i.pointer.delta());
@@ -1397,6 +1475,8 @@ impl GaiaApp {
         let mut pending_connection: Option<(u64, usize, PortRef)> = None;
         let mut requested_preview = None;
         let mut requested_delete = None;
+        let mut pending_selection: Option<(u64, bool)> = None;
+        let mut pending_move: Option<(u64, [f32; 2])> = None;
         let mut wire_armed = false;
         let released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
         let connecting_type = self.wire_start.as_ref().and_then(|source| {
@@ -1428,7 +1508,7 @@ impl GaiaApp {
             title_response.context_menu(|ui| {
                 ui.label(format!("{}  #{}", node.kind.label(), node_id));
                 if ui.button("Select node").clicked() {
-                    self.selected = node_id;
+                    pending_selection = Some((node_id, false));
                     if let Some((port, _)) = node.kind.output_ports().first() {
                         requested_preview = Some(PortRef::new(node_id, *port));
                     }
@@ -1440,21 +1520,23 @@ impl GaiaApp {
                 }
             });
             if response.clicked() || title_response.clicked() {
-                self.selected = node.id;
+                pending_selection = Some((node.id, additive));
                 if let Some((port, _)) = node.kind.output_ports().first() {
                     requested_preview = Some(PortRef::new(node.id, *port));
                 }
             }
+            if title_response.drag_started() && can_move
+                && !self.selected_nodes.contains(&node.id)
+            {
+                pending_selection = Some((node.id, additive));
+            }
             if title_response.dragged() && can_move {
                 let motion = title_response.drag_motion() / view.zoom;
-                node.position[0] += motion.x;
-                node.position[1] += motion.y;
-                self.selected = node.id;
-                self.unsaved = true;
+                pending_move = Some((node.id, [motion.x, motion.y]));
             }
 
             let color = node_accent(&node.kind);
-            let selected = self.selected == node.id;
+            let selected = self.selected_nodes.contains(&node.id);
             let background_color = if selected {
                 egui::Color32::from_rgb(36, 56, 59)
             } else if response.hovered() || title_response.hovered() {
@@ -1492,10 +1574,33 @@ impl GaiaApp {
                     && self.wire_start.as_ref().is_some_and(|source| source.node != node.id);
                 let resp = ui.interact(hit, ui.id().with(("input", node.id, slot)),
                     egui::Sense::click()).on_hover_text(format!(
-                    "Input {} · {} · drop matching output here", slot + 1, kind.label()));
-                if resp.clicked() && self.wire_start.is_some() {
-                    pending_connection = self.wire_start.as_ref()
-                        .map(|source| (node.id, slot, source.clone()));
+                    "Input {} · {} · click to replace cable, then click output", slot + 1, kind.label()));
+                resp.context_menu(|ui| {
+                    ui.label(format!("Replace {} input on #{}", kind.label(), node.id));
+                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        for candidate in &old_nodes {
+                            if candidate.id == node.id { continue; }
+                            for (port, source_type) in candidate.kind.output_ports() {
+                                if *source_type != kind { continue; }
+                                let reference = PortRef::new(candidate.id, *port);
+                                let label = format!("#{} {}:{}", candidate.id,
+                                    candidate.kind.label(), port);
+                                if ui.selectable_label(node.inputs[slot] == reference, label).clicked() {
+                                    pending_connection = Some((node.id, slot, reference));
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
+                });
+                if resp.clicked() {
+                    if let Some(source) = &self.wire_start {
+                        pending_connection = Some((node.id, slot, source.clone()));
+                    } else {
+                        self.wire_target = Some((node.id, slot));
+                        self.status = format!("Input {} on #{} armed: choose an output",
+                            slot + 1, node.id);
+                    }
                 }
                 // Explicit pointer hit-testing is essential: drag capture on
                 // the source socket can make input Response.hovered() false.
@@ -1504,7 +1609,9 @@ impl GaiaApp {
                         .map(|source| (node.id, slot, source.clone()));
                 }
                 painter.circle_filled(center, if hovered { 7.5 } else { 5.3 } * view.zoom,
-                    if compatible && hovered { ui_theme::ACCENT } else {
+                    if (compatible && hovered) || self.wire_target == Some((node.id, slot)) {
+                        ui_theme::ACCENT
+                    } else {
                         graph_port_color(kind)
                     });
                 if view.zoom >= 0.65 {
@@ -1526,14 +1633,23 @@ impl GaiaApp {
                     "Output {} · {} · click or drag to connect", port, kind.label()));
                 if response.drag_started() {
                     self.selected = node.id;
+                    if !self.selected_nodes.contains(&node.id) {
+                        pending_selection = Some((node.id, false));
+                    }
                     self.wire_start = Some(PortRef::new(node.id, *port));
                     self.wire_dragging = true;
                     requested_preview = Some(PortRef::new(node.id, *port));
                     wire_armed = true;
                 } else if response.clicked() {
                     self.selected = node.id;
-                    self.wire_start = Some(PortRef::new(node.id, *port));
-                    self.wire_dragging = false;
+                    pending_selection = Some((node.id, false));
+                    let reference = PortRef::new(node.id, *port);
+                    if let Some((target, input)) = self.wire_target.take() {
+                        pending_connection = Some((target, input, reference));
+                    } else {
+                        self.wire_start = Some(reference);
+                        self.wire_dragging = false;
+                    }
                     requested_preview = Some(PortRef::new(node.id, *port));
                     wire_armed = true;
                 }
@@ -1582,6 +1698,47 @@ impl GaiaApp {
             }
         }
 
+        // Selection and group translation are applied after card iteration,
+        // so a single drag delta reaches each selected card exactly once.
+        if let Some((id, additive)) = pending_selection {
+            graph_edit::select(&mut self.selected_nodes, id, additive);
+            self.selected = if self.selected_nodes.contains(&id) {
+                id
+            } else {
+                *self.selected_nodes.iter().next().unwrap_or(&id)
+            };
+        }
+        if let Some((leader, motion)) = pending_move {
+            if !self.selected_nodes.contains(&leader) {
+                graph_edit::select(&mut self.selected_nodes, leader, false);
+            }
+            self.selected = leader;
+            if graph_edit::move_group(&mut self.project.graph, &self.selected_nodes, motion) {
+                self.unsaved = true;
+            }
+        }
+        if let Some(origin) = self.marquee_start {
+            if let Some(now) = pointer {
+                let marquee = egui::Rect::from_two_pos(origin, now);
+                painter.rect_filled(marquee, 0.0,
+                    egui::Color32::from_rgba_unmultiplied(74, 185, 196, 30));
+                painter.rect_stroke(marquee, 0.0,
+                    egui::Stroke::new(1.5, ui_theme::ACCENT),
+                    egui::StrokeKind::Outside);
+                if released {
+                    let ids: Vec<_> = old_nodes.iter()
+                        .filter(|node| view.node_rect(rect, node).intersects(marquee))
+                        .map(|node| node.id).collect();
+                    for id in ids { self.selected_nodes.insert(id); }
+                    if let Some(&id) = self.selected_nodes.iter().next() {
+                        self.selected = id;
+                    }
+                    self.marquee_start = None;
+                }
+            } else if released {
+                self.marquee_start = None;
+            }
+        }
         if let Some(preview) = requested_preview {
             if self.preview_source != preview {
                 self.preview_source = preview;
@@ -1598,6 +1755,7 @@ impl GaiaApp {
                 Err(error) => self.status = format!("Connection rejected: {error}"),
             }
             self.wire_start = None;
+            self.wire_target = None;
             self.wire_dragging = false;
         } else if released && !wire_armed && self.wire_dragging {
             // Drag-to-connect is one gesture; dropping on empty space cancels.
@@ -1607,12 +1765,22 @@ impl GaiaApp {
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.wire_start = None;
+            self.wire_target = None;
+            self.marquee_start = None;
             self.wire_dragging = false;
         }
         if let Some(id) = requested_delete {
-            self.request_node_deletion(id);
+            if self.selected_nodes.contains(&id) && self.selected_nodes.len() > 1 {
+                self.request_selected_deletion();
+            } else {
+                self.request_node_deletion(id);
+            }
         }
         if pointer_inside && !ui.ctx().egui_wants_keyboard_input() {
+            if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A)) {
+                self.selected_nodes = self.project.graph.nodes.iter().map(|n| n.id).collect();
+                self.status = format!("Selected all {} nodes", self.selected_nodes.len());
+            }
             if ui.input(|i| i.key_pressed(egui::Key::F)) {
                 self.fit_graph_requested = true;
             }
@@ -1622,7 +1790,7 @@ impl GaiaApp {
             if ui.input(|i| i.key_pressed(egui::Key::Delete)
                 || i.key_pressed(egui::Key::Backspace))
             {
-                self.request_node_deletion(self.selected);
+                self.request_selected_deletion();
             }
         }
     }
@@ -1862,7 +2030,8 @@ impl eframe::App for GaiaApp {
                     ui.label(egui::RichText::new("GRAPH").size(12.0)
                         .strong().color(ui_theme::TEXT));
                     ui.label(egui::RichText::new(
-                        format!("{} nodes", self.project.graph.nodes.len()))
+                        format!("{} nodes · {} selected",
+                            self.project.graph.nodes.len(), self.selected_nodes.len()))
                         .monospace().size(10.0).color(ui_theme::MUTED));
                     ui.menu_button("+ Add node", |ui| {
                         ui.set_width(240.0);
@@ -1873,7 +2042,7 @@ impl eframe::App for GaiaApp {
                         "Delete selected node · Delete key. Reconnects compatible wires.")
                         .clicked()
                     {
-                        self.request_node_deletion(self.selected);
+                        self.request_selected_deletion();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Fit all").on_hover_text("Frame every node · F").clicked() {
@@ -1892,7 +2061,7 @@ impl eframe::App for GaiaApp {
                     });
                 });
                 ui.label(egui::RichText::new(
-                    "Wheel: zoom  ·  drag empty canvas / middle button: pan  ·  drag or click sockets to wire  ·  right-click: actions"
+                    "Ctrl/Shift-click or Ctrl-drag: multi-select · drag headers: move group · right-click inputs: replace cable · wheel: zoom"
                 ).size(10.0).color(ui_theme::MUTED));
                 self.graph_canvas(ui);
             });
