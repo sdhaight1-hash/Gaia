@@ -36,7 +36,7 @@ pub(crate) fn scratch_file() -> Result<File, String> {
     tempfile::tempfile().map_err(|err| err.to_string())
 }
 
-fn write_row(file: &mut File, samples: &[f32]) -> Result<(), String> {
+pub(crate) fn write_row(file: &mut File, samples: &[f32]) -> Result<(), String> {
     let mut bytes = Vec::with_capacity(samples.len() * 4);
     for value in samples {
         bytes.extend_from_slice(&value.to_le_bytes());
@@ -44,7 +44,7 @@ fn write_row(file: &mut File, samples: &[f32]) -> Result<(), String> {
     file.write_all(&bytes).map_err(|err| err.to_string())
 }
 
-fn read_row(file: &mut File, size: usize, y: usize) -> Result<Vec<f32>, String> {
+pub(crate) fn read_row(file: &mut File, size: usize, y: usize) -> Result<Vec<f32>, String> {
     let offset = (y as u64) * (size as u64) * 4;
     file.seek(SeekFrom::Start(offset)).map_err(|err| err.to_string())?;
     let mut bytes = vec![0u8; size * 4];
