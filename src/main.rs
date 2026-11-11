@@ -1,4 +1,5 @@
 mod gpu;
+mod graph_view;
 mod material_texture;
 mod ui_theme;
 mod history;
