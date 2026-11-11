@@ -2,6 +2,7 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
+use crate::adjust::adjust_height;
 use crate::drainage::drainage;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
@@ -344,7 +345,7 @@ impl NodeKind {
             (Self::Colorize { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -421,6 +422,10 @@ fn evaluate_kind(
         NodeKind::Stratify { seed, spacing, intensity, warp, tilt, direction } =>
             NodeOutputs::default().with("height", PortType::Height,
                 stratify(take(0), *seed, *spacing, *intensity, *warp, *tilt, *direction)),
+        NodeKind::Adjust { multiply, shaper, clamp_min, clamp_max, autolevel, invert } =>
+            NodeOutputs::default().with("height", PortType::Height,
+                adjust_height(take(0), *multiply, *shaper, *clamp_min,
+                    *clamp_max, *autolevel, *invert)?),
         NodeKind::Blur { radius } => NodeOutputs::default()
             .with("height", PortType::Height, blur(take(0), *radius)),
         NodeKind::Blend { mix } => NodeOutputs::default()
@@ -521,6 +526,25 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn adjust_connects_to_selected_mountain_and_changes_elevation() {
+        let mut scene = Project::default();
+        let node = scene.graph.add_from(NodeKind::Adjust {
+            multiply: 1.0, shaper: 0.65,
+            clamp_min: 0.0, clamp_max: 4.0,
+            autolevel: false, invert: false,
+        }, &PortRef::height(1));
+        assert_eq!(scene.graph.get(node).unwrap().inputs[0], PortRef::height(1));
+        let source = scene.graph.evaluate_port(32, &PortRef::height(1)).unwrap();
+        let output = scene.graph.evaluate_port(32, &PortRef::height(node)).unwrap();
+        assert_eq!(output.kind, PortType::Height);
+        assert_ne!(source.data, output.data);
+        let restored: Project = serde_json::from_str(
+            &serde_json::to_string(&scene).unwrap()).unwrap();
+        assert_eq!(output.data, restored.graph.evaluate_port(32,
+            &PortRef::height(node)).unwrap().data);
+    }
 
     #[test]
     fn volcano_routes_into_stratify_and_hydrology_and_roundtrips() {
