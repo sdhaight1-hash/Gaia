@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/snow-settling` (stacked on preceding PRs).
+Development branch: `fix/selected-height-3d-preview` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -45,6 +45,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
   Default terrain surface colors blend smoothly across elevation and slope,
   avoiding unnatural horizontal rings around crater or mountain thresholds.
+  Selecting any Height output (including Lake:surface, or an earlier generator)
+  also selects the actual 3D mesh and evaluates only the required subgraph,
+  avoiding unrelated downstream erosion builds.
   Selecting a Color graph port and switching to 3D paints that RGBA map's
   RGB channels over the terrain geometry (per-vertex lighting preserved).
 - Center **2D map**: choose any existing node output port (height,
