@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/sea-coastal-surface` (stacked on preceding PRs).
+Development branch: `feat/derived-terrain-lighting` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Island, Volcano, Plates, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
-  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Sea, Snow, Elevation Mask, Mask Levels, Warp,
+  Curvature, AO, Sunlight, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Sea, Snow, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
@@ -107,6 +107,10 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   prevent new terminal pits. Outputs carved Height, channels Mask and normalized
   wear Mask. This first version does not model rain discharge, water surface,
   sediment mass conservation or art-directable headwater masks.
+- Derived AO and Sunlight maps: eight-direction horizon occlusion and
+  directional diffuse light with terrain self-shadow, both typed Mask outputs
+  for color blending or PNG16 export. This is deterministic CPU raster
+  lighting, not ray-traced PBR lighting or an editable material graph.
 - Sea: static sea-level inundation with actual dry/wet coastline detection,
   flat water surface, raw water depth, wet/shore/beach masks and adjustable
   local coastline smoothing. Shoreline distance uses raster adjacency, not
