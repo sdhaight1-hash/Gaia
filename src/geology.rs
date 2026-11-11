@@ -7,6 +7,60 @@ fn uv(index: usize, size: usize) -> f32 {
     index as f32 / (size - 1).max(1) as f32
 }
 
+/// Eruptive cone with an independently shaped central mouth, broad lower
+/// flanks and gently warped gullies. This is a procedural landform primitive,
+/// not a lava-flow or plate-tectonics simulation.
+pub fn volcano(
+    size: usize, seed: u32, radius: f32, height: f32,
+    mouth: f32, bulk: f32, roughness: f32, center_x: f32, center_y: f32,
+) -> HeightField {
+    let mut out = HeightField::flat(size, 0.0);
+    if size < 2 { return out; }
+    let radius = radius.clamp(0.10, 0.48);
+    let height = height.clamp(0.0, 3.0);
+    let mouth = mouth.clamp(0.08, 0.65);
+    let bulk = bulk.clamp(0.0, 1.0);
+    let roughness = roughness.clamp(0.0, 1.0);
+    let cx = center_x.clamp(0.2, 0.8);
+    let cy = center_y.clamp(0.2, 0.8);
+    let exponent = 1.7 - 0.9 * bulk;
+    let lip_height = (1.0 - mouth).powf(exponent);
+    let floor_height = lip_height * (0.21 + 0.18 * (1.0 - bulk));
+    let smooth = |t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    for y in 0..size {
+        for x in 0..size {
+            let u = uv(x, size);
+            let v = uv(y, size);
+            let dx = u - cx;
+            let dy = v - cy;
+            let coastline = fractal(u, v, seed, 5.5) - 0.5;
+            let warped_radius = radius * (1.0 + roughness * 0.28 * coastline);
+            let r = (dx * dx + dy * dy).sqrt() / warped_radius;
+            if r >= 1.0 { continue; }
+
+            let profile = if r < mouth {
+                // Smooth inner basin blends into the rim without generating
+                // a one-cell height discontinuity on the crater wall.
+                floor_height + (lip_height - floor_height) * smooth(r / mouth)
+            } else {
+                (1.0 - r).powf(exponent)
+            };
+            let gullies = fractal(u, v, seed.wrapping_add(97), 13.0) - 0.5;
+            let rough_profile = profile * (1.0 + roughness * 0.28 * gullies);
+            let edge_distance = u.min(v).min(1.0-u).min(1.0-v);
+            // Keep the perimeter exactly at sea level even when a user
+            // positions a volcano near the map edge.
+            let boundary = smooth(edge_distance / 0.022);
+            out.values[y * size + x] = (height * rough_profile * boundary).max(0.0);
+        }
+    }
+    out
+}
+
 /// Land surrounded by a guaranteed ocean-level boundary.
 /// Coastline noise modulates the island radius; a radial continental-shelf
 /// falloff spans the full island radius, avoiding wall-like coastal cliffs.
@@ -335,6 +389,43 @@ mod tests {
         assert!(a.values.iter().all(|value| value.is_finite() && *value >= 0.0));
         assert!(island(n, 7, 0.65, 0.0, 0.75)
             .values.iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn volcano_has_central_caldera_raised_lip_and_ocean_border() {
+        let n = 128;
+        let a = volcano(n, 37, 0.4, 1.0, 0.3, 0.6, 0.35, 0.5, 0.5);
+        let b = volcano(n, 37, 0.4, 1.0, 0.3, 0.6, 0.35, 0.5, 0.5);
+        let c = volcano(n, 38, 0.4, 1.0, 0.3, 0.6, 0.35, 0.5, 0.5);
+        assert_eq!(a,b);
+        assert_ne!(a,c);
+        let mid = n/2;
+        let mouth = mid + (0.4 * 0.3 * (n-1) as f32).round() as usize;
+        let center_height = a.get(mid,mid);
+        let lip_height = a.get(mouth, mid);
+        assert!(center_height > 0.05);
+        assert!(lip_height > center_height * 1.5,
+            "Volcanic mouth should form a depression: {center_height} < {lip_height}");
+        for i in 0..n {
+            assert_eq!(a.get(i,0),0.0);
+            assert_eq!(a.get(i,n-1),0.0);
+            assert_eq!(a.get(0,i),0.0);
+            assert_eq!(a.get(n-1,i),0.0);
+        }
+        assert!(a.values.iter().all(|value| value.is_finite() && *value >= 0.0));
+        assert!(volcano(n,37,0.4,0.0,0.3,0.6,0.35,0.5,0.5)
+            .values.iter().all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn volcano_bulk_mouth_and_position_have_effect() {
+        let a = volcano(64, 4, 0.35, 1.0, 0.2, 0.1, 0.4, 0.5, 0.5);
+        let b = volcano(64, 4, 0.35, 1.0, 0.5, 0.1, 0.4, 0.5, 0.5);
+        let c = volcano(64, 4, 0.35, 1.0, 0.2, 0.9, 0.4, 0.5, 0.5);
+        let d = volcano(64, 4, 0.35, 1.0, 0.2, 0.1, 0.4, 0.65, 0.5);
+        assert_ne!(a,b);
+        assert_ne!(a,c);
+        assert_ne!(a,d);
     }
 
     #[test]
