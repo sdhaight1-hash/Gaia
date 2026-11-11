@@ -1059,6 +1059,74 @@ mod tests {
     }
 
     #[test]
+    fn hydraulic_cli_requires_explicit_mode_and_rejects_conflicting_args() {
+        let args = [
+            "--project", "world.gaia.json", "--output", "build/eroded",
+            "--hydraulic-region", "7", "--region-tiles", "4", "--no-obj",
+            "--hydraulic-edge", "closed", "--hydraulic-checkpoint",
+        ];
+        let opts = parse_args(args.into_iter().map(str::to_owned)).unwrap().unwrap();
+        assert_eq!(opts.hydraulic_region, Some(7));
+        assert_eq!(opts.region_tiles, Some(4));
+        assert_eq!(opts.hydraulic_edge, WorldEdge::Closed);
+        assert!(opts.hydraulic_checkpoint);
+        for invalid in [
+            vec!["--project", "x", "--output", "x", "--hydraulic-region", "3",
+                 "--region-tiles", "2"],
+            vec!["--project", "x", "--output", "x", "--hydraulic-region", "3",
+                 "--no-obj"],
+            vec!["--project", "x", "--output", "x", "--hydraulic-region", "3",
+                 "--region-tiles", "2", "--no-obj", "--port", "1:height"],
+            vec!["--demo", "--output", "x", "--region-tiles", "2",
+                 "--no-obj", "--hydraulic-region", "3"],
+            vec!["--project", "x", "--output", "x", "--hydraulic-checkpoint"],
+        ] {
+            assert!(parse_args(invalid.into_iter().map(str::to_owned)).is_err());
+        }
+    }
+
+    #[test]
+    fn hydraulic_cli_builds_from_saved_project_and_exports_six_fields() {
+        use gaia::hydrology::HydraulicParameters;
+        use gaia::terrain::{Node, NodeKind};
+        let dir = tempfile::tempdir().unwrap();
+        let scene = dir.path().join("project.gaia.json");
+        let stem = dir.path().join("eroded");
+        let mut project = Project::default();
+        project.resolution = 32;
+        project.graph.nodes.push(Node {
+            id: 7,
+            kind: NodeKind::Hydraulic {
+                params: HydraulicParameters {
+                    iterations: 2, ..Default::default()
+                },
+            },
+            inputs: vec![PortRef::height(1)],
+            position: [600.0, 100.0],
+        });
+        project.graph.output = 7;
+        project.save(&scene).unwrap();
+        let options = parse_args(vec![
+            "--project".into(), scene.display().to_string(),
+            "--output".into(), stem.display().to_string(),
+            "--hydraulic-region".into(), "7".into(),
+            "--region-tiles".into(), "2".into(), "--no-obj".into(),
+        ]).unwrap().unwrap();
+        build(options).unwrap();
+        let folder = stem.with_extension("hydraulic.tiles");
+        for channel in ["height", "water", "sediment", "wear", "deposits", "flow"] {
+            assert!(folder.join(channel).join("x00_y00.png").exists());
+        }
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(folder.join("report.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(report["hydraulic_node"], 7);
+        assert_eq!(report["iterations"], 2);
+        assert_eq!(report["tile_count"], 4);
+        assert!(report["solid_ledger"]["residual"].as_f64().unwrap().abs() < 0.01);
+    }
+
+    #[test]
     fn accepts_mask_output_without_mesh() {
         let options = parse_args(vec![
             "--demo".into(), "--output".into(), "out".into(),
