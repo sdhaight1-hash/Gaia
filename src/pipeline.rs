@@ -5,6 +5,7 @@ use crate::hydrology::simulate;
 use crate::adjust::adjust_height;
 use crate::normals::derive_normals;
 use crate::drainage::drainage;
+use crate::depression::fill_depressions;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -306,6 +307,10 @@ impl NodeKind {
             ("accumulation", PortType::Mask),
             ("channels", PortType::Mask),
         ];
+        const DEPRESSION: &[(&str, PortType)] = &[
+            ("height", PortType::Height),
+            ("fill_depth", PortType::Water),
+        ];
         const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const EROSION: &[(&str, PortType)] = &[
             ("height", PortType::Height),
@@ -329,6 +334,7 @@ impl NodeKind {
             Self::Curvature => CURVATURE,
             Self::Aspect { .. } => ASPECT,
             Self::Drainage { .. } => DRAINAGE,
+            Self::DepressionFill { .. } => DEPRESSION,
             Self::MaskLevels { .. } => MASK_LEVELS,
             Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
@@ -348,7 +354,7 @@ impl NodeKind {
             (Self::Colorize { .. } | Self::Normals { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -448,6 +454,12 @@ fn evaluate_kind(
             NodeOutputs::default()
                 .with("accumulation", PortType::Mask, result.accumulation)
                 .with("channels", PortType::Mask, result.channels)
+        },
+        NodeKind::DepressionFill { grade } => {
+            let fields = fill_depressions(take(0), *grade, &cancelled)?;
+            NodeOutputs::default()
+                .with("height", PortType::Height, fields.height)
+                .with("fill_depth", PortType::Water, fields.fill_depth)
         },
         NodeKind::MaskLevels { black, white, gamma, invert } =>
             NodeOutputs::default().with("mask", PortType::Mask,
