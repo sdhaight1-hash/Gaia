@@ -201,6 +201,37 @@ See \`src/terrain.rs\` persistence tests.
   with CPU fallback when no GPU device was supplied. GPU numerical
   verification on a target machine is still required.
 
+## Bounded-memory regional terrain builds (phase 1)
+
+For selected **local Height graphs** Gaia can now evaluate exact world-grid
+regions directly, rather than calculating and retaining an entire heightfield
+and then subdividing it:
+
+```powershell
+cargo run --release --bin gaia-build -- --demo --port 1:height --output builds/mountain-regions --resolution 4096 --region-tiles 8 --no-obj
+```
+
+This example builds the demo's **Mountain node #1**, not its Erosion output
+node #3. The command writes rectangular (where needed) overlapping PNG16
+images in `STEM.region.tiles/`, a `STEM.region.tiles.json` manifest
+with each tile's global sample bounds, and a `STEM.region.report.json`
+containing unique-pixel statistics and intermediate sample-memory counts.
+Adjacent regions share the same global boundary samples exactly, without
+resampling. World resolution is 32–8192; region count is 2–64 per axis. The
+terminal tile may be narrower than preceding ones for non-divisible sizes.
+
+**Supported ancestor nodes:** Mountain, Noise, Adjust (autolevel off), Blur
+(with exact clipped input halos, including nested blurs), and Blend. A
+disconnected unrelated node need not be region-compatible. Other nodes,
+including hydraulic/thermal erosion, autolevel, materials and global drainage,
+fail with a clear error **before** writing output; they are not evaluated
+with a hidden full-world fallback. There is deliberately no stitched whole
+PNG, OBJ mesh, color port, batch export or GUI region job in this phase.
+Use ordinary `--tiles` when you need the legacy export-only
+subdivision of an already built global graph. Peak memory in the region
+report covers live intermediate float samples; it excludes PNG encoding and
+Rust/OS overhead. No claim of fully streamed Gaea-class erosion is made.
+
 ## Headless builds
 
 Gaia also includes a windowless CPU builder, useful for automation and
