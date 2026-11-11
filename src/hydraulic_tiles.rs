@@ -490,6 +490,26 @@ mod tests {
     }
 
     #[test]
+    fn nonuniform_t_junction_cores_match_the_full_width_reference() {
+        let n = 65;
+        let (h, w, s) = fixture(n);
+        let params = HydraulicParameters { iterations: 1, ..Default::default() };
+        // Right-hand neighbors have different vertical boundaries than the
+        // left core. A horizontal stripe layout cannot express this partition.
+        let mut cores = vec![
+            Region { x: 0, y: 0, width: 17, height: n },
+            Region { x: 17, y: 0, width: n - 17, height: 19 },
+            Region { x: 17, y: 19, width: n - 17, height: n - 19 },
+        ];
+        let mut baseline = disk_state(&h, &w, &s);
+        baseline.step_eroding(7, WorldEdge::Open, params, || false).unwrap();
+        let mut tiled = disk_state(&h, &w, &s);
+        cores.reverse();
+        tiled.step_eroding_tiles(&cores, WorldEdge::Open, params, || false).unwrap();
+        compare_states(&mut tiled, &mut baseline);
+    }
+
+    #[test]
     fn tile_partition_validation_rejects_gaps_overlaps_and_oversized_cores() {
         let (h, w, s) = fixture(32);
         let params = HydraulicParameters { iterations: 1, ..Default::default() };
@@ -498,14 +518,11 @@ mod tests {
         assert!(state.step_eroding_tiles(
             &[], WorldEdge::Closed, params, || false,
         ).unwrap_err().contains("cover"));
-        assert!(state.step_eroding_tiles(
+        let gap = state.step_eroding_tiles(
             &[Region { x: 0, y: 0, width: 16, height: 32 }],
             WorldEdge::Closed, params, || false,
-        ).unwrap_err().contains("cover") ||
-            state.step_eroding_tiles(
-                &[Region { x: 0, y: 0, width: 16, height: 32 }],
-                WorldEdge::Closed, params, || false,
-            ).unwrap_err().contains("gap"));
+        ).unwrap_err();
+        assert!(gap.contains("cover") || gap.contains("gap"));
         let mut overlaps = grid(32, 2, 2);
         overlaps.push(overlaps[0]);
         assert!(state.step_eroding_tiles(
