@@ -552,12 +552,12 @@ impl GaiaApp {
                 NodeKind::Blur { radius } => {
                     changed |= ui.add(egui::Slider::new(radius, 1..=8).text("Radius")).changed();
                 }
-                NodeKind::Blend { mix } | NodeKind::MaskedBlend { mix }
-                | NodeKind::ColorMixer { mix } => {
+                NodeKind::Blend { mix } | NodeKind::MaskedBlend { mix } => {
                     changed |= ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")).changed();
-                    if matches!(node.kind, NodeKind::ColorMixer { .. }) {
-                        ui.small("Requires two Color ports and a Mask port.");
-                    }
+                }
+                NodeKind::ColorMixer { mix } => {
+                    changed |= ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")).changed();
+                    ui.small("Requires two Color ports and a Mask port.");
                 }
                 NodeKind::Colorize { low, high, midpoint, contrast } => {
                     ui.horizontal(|ui| {
