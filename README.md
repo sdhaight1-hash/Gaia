@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `fix/typed-node-autowiring` (stacked on preceding PRs).
+Development branch: `feat/headless-2k-builds` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -113,6 +113,7 @@ reproducible terrain exports without a working GPU or graphics session:
 
 ```sh
 cargo run --release --bin gaia-build -- --demo --output builds/sample --resolution 256
+cargo run --release --bin gaia-build -- --demo --output builds/sample-2k --resolution 2048 --no-obj
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/final
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/erosion-wear --port 2:wear --no-obj
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/tiles --tiles 4 --no-obj
@@ -122,7 +123,10 @@ Scalar builds write normalized 16-bit grayscale PNG; Color builds write
 RGB8 PNG (alpha intentionally omitted). Every build writes a JSON report
 of dimensions, scalar/luminance min/max/mean, selected port and export format.
 Height outputs also write OBJ unless `--no-obj` is set. The current supported resolutions
-are 32–512. Optional `--tiles 2..8` exports an overlapping grid of PNG16
+are 32–2048 for the headless builder (desktop 3D preview stays at 64–512).
+A 2K graph build still evaluates every terrain node at full-grid resolution,
+so memory use scales with resolution squared and cached graph fields.
+Optional `--tiles 2..8` exports an overlapping grid of PNG16
 scalar or RGB8 Color tiles into `STEM.tiles/` and writes `STEM.tiles.json`.
 Each adjacent pair shares one identical pixel border; non-divisible source
 resolutions are uniformly resampled onto a common global pixel lattice.
