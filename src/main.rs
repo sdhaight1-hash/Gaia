@@ -1,5 +1,6 @@
 mod gpu;
 mod ui_theme;
+mod history;
 
 use eframe::egui;
 use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Project};
@@ -7,6 +8,7 @@ use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
 use std::path::Path;
+use history::EditHistory;
 
 struct GaiaApp {
     project: Project,
@@ -25,6 +27,8 @@ struct GaiaApp {
     graph_dirty: bool,
     gpu_dirty: bool,
     unsaved: bool,
+    history: EditHistory,
+    skip_history_record: bool,
 }
 
 impl GaiaApp {
@@ -65,6 +69,8 @@ impl GaiaApp {
             graph_dirty: false,
             gpu_dirty: false,
             unsaved: false,
+            history: EditHistory::default(),
+            skip_history_record: false,
         }
     }
 
@@ -149,11 +155,41 @@ impl GaiaApp {
                 self.selected = project.graph.output;
                 self.preview_source = PortRef::height(project.graph.output);
                 self.project = project;
+                self.history.clear();
+                self.skip_history_record = true;
                 self.graph_dirty = true;
                 self.unsaved = false;
                 self.status = format!("Opened {}", self.filename);
             }
             Err(error) => self.status = format!("Open failed: {error}"),
+        }
+    }
+
+    fn after_history_restore(&mut self, label: &str) {
+        if self.project.graph.get(self.selected).is_none() {
+            self.selected = self.project.graph.output;
+        }
+        let preview_still_exists = self.project.graph.get(self.preview_source.node)
+            .is_some_and(|node| node.kind.output_ports().iter()
+                .any(|(port, _)| *port == self.preview_source.port));
+        if !preview_still_exists {
+            self.preview_source = PortRef::height(self.project.graph.output);
+        }
+        self.wire_start = None;
+        self.graph_dirty = true;
+        self.unsaved = true;
+        self.status = label.to_owned();
+    }
+
+    fn undo_edit(&mut self) {
+        if self.history.undo(&mut self.project) {
+            self.after_history_restore("Undid last graph edit");
+        }
+    }
+
+    fn redo_edit(&mut self) {
+        if self.history.redo(&mut self.project) {
+            self.after_history_restore("Redid graph edit");
         }
     }
 
@@ -273,6 +309,18 @@ impl GaiaApp {
             }
             if ui.button("Save").on_hover_text("Save project · Ctrl+S").clicked() {
                 self.save_project();
+            }
+            if ui.add_enabled(self.history.can_undo(), egui::Button::new("↶ Undo"))
+                .on_hover_text("Undo · Ctrl+Z").clicked()
+            {
+                self.undo_edit();
+                self.skip_history_record = true;
+            }
+            if ui.add_enabled(self.history.can_redo(), egui::Button::new("↷ Redo"))
+                .on_hover_text("Redo · Ctrl+Shift+Z or Ctrl+Y").clicked()
+            {
+                self.redo_edit();
+                self.skip_history_record = true;
             }
             ui.menu_button("Export ▾", |ui| {
                 if ui.button("16-bit Heightmap  ·  PNG").clicked() {
@@ -799,6 +847,19 @@ impl eframe::App for GaiaApp {
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) {
             self.open_project();
         }
+        // Leave keyboard undo inside focused text fields to egui's text editor.
+        if !ctx.wants_keyboard_input() {
+            if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+                if ctx.input(|i| i.modifiers.shift) {
+                    self.redo_edit();
+                } else {
+                    self.undo_edit();
+                }
+            } else if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y)) {
+                self.redo_edit();
+            }
+        }
+        let project_before_frame = self.project.clone();
 
         egui::Panel::top("gaia_toolbar")
             .frame(ui_theme::toolbar())
@@ -864,6 +925,12 @@ impl eframe::App for GaiaApp {
             .frame(egui::Frame::new().fill(ui_theme::BG).inner_margin(12))
             .show(ui, |ui| self.viewport(ui));
 
+        if !std::mem::take(&mut self.skip_history_record) {
+            self.history.record_frame(
+                project_before_frame, &self.project,
+                ctx.input(|i| i.pointer.primary_down()),
+            );
+        }
         if self.graph_dirty {
             self.rebuild(&ctx);
         }
