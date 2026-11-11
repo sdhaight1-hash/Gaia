@@ -12,16 +12,16 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 
 | Capability | Implemented on latest development branch | Still missing for Gaea-class workflow |
 |---|---|---|
-| Graph | Typed Height/Mask/Water output ports, multi-output nodes, direct socket wiring, 64-edit project undo/redo, safe unused-node deletion, input type validation, legacy JSON migration, cached DAG, async cancellable builds | Macros, expressions, variables, user subgraphs and deletion/rewiring of connected nodes |
+| Graph | Typed Height/Mask/Water/Color output ports, multi-output nodes, direct socket wiring, 64-edit project undo/redo, safe unused-node deletion, input type validation, legacy JSON migration, cached DAG, async cancellable builds | Macros, expressions, variables, user subgraphs and deletion/rewiring of connected nodes |
 | Terrain generators | Mountain, Noise, Range, Crater, Dunes, Canyon | Islands, volcanoes, uplift/tectonics, rock layers, geological diversity, art-directed generator fidelity |
 | Terrain modifiers | Terrace, Blur, Warp, Blend, Masked Blend | Fracture, strata, displacement operators, custom remaps, more blending modes |
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
 | Hydrology | Water depth, suspended sediment, cumulative flow map | Rivers/lakes/sea geometry, watershed hierarchy, coastlines, stable high-resolution water systems |
 | Masks | Slope, Curvature, compass-facing Aspect, Elevation, Wear, Deposits, Flow | Terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
-| Color/materials | No true Color fields | Colorized surfaces, gradients, texture/multi-channel materials, splat/normal maps |
+| Color/materials | RGBA Color fields, editable altitude palettes, typed masked Color Mixer, 2D preview, RGB8 PNG export in GUI/CLI | 3D material rendering, PBR/shaders, stratified materials, texture/splat/normal maps |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
-| Output/build | Transparent JSON projects, normalized 16-bit PNG and OBJ, export selected scalar map | Large tiled/region builds, adaptive meshes, heightfield import, texture/material exports, CLI/job queue, DCC/engine integrations |
+| Output/build | Portable JSON projects, grayscale PNG8/PNG16 import, scalar PNG16/RGB8 color PNG/OBJ export, selected-port headless CLI | Large tiled/region builds, adaptive meshes, layered material exports, job queue and DCC/engine integrations |
 | Performance | Cancellable background builds, incremental cache, wgpu preview, first WGSL Blend compute kernel (>=256 samples) | CPU/GPU performance profiling, broader compute kernels, GPU batched graph execution, tiling, memory budgets, GPU numerical sign-off |
 
 ## Acceptance levels
@@ -42,13 +42,13 @@ Real GPU numerical results remain required.
 
 ## Immediate implementation priorities
 
-1. Finish depth-tested wgpu 3D render target, drag-to-connect node ports,
-   undo/redo and native file handling — before expanding the UI further.
+1. Validate the depth-tested viewport, socket wiring, undo/redo and file drag/drop
+   on a real Windows GPU; native file dialogs remain incomplete.
 2. Add terrain import and output units/scales, batch builds, diagnostic
    overlays and a reproducible benchmark suite.
 3. Expand hydrology (flow accumulation, drains, channel extraction, lakes),
    test water/solid ledgers over long runs and validate tile seams.
-4. Add multi-channel Color/Materials as actual typed buffers, then
+4. Integrate existing typed Color buffers with the 3D material preview, then
    environment-aware surface and ecosystem models.
 5. Tiled evaluation and GPU batched kernels with CPU reference checks,
    caches, cancellation, persistent build artifacts and headless CLI.
