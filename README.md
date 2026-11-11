@@ -217,8 +217,8 @@ images in `STEM.region.tiles/`, a `STEM.region.tiles.json` manifest
 with each tile's global sample bounds, and a `STEM.region.report.json`
 containing unique-pixel statistics and intermediate sample-memory counts.
 Adjacent regions share the same global boundary samples exactly, without
-resampling. World resolution is 32–8192; region count is 2–64 per axis. The
-terminal tile may be narrower than preceding ones for non-divisible sizes.
+resampling. World resolution is 32–8192; region count is 2–64 per axis. Tile
+widths can differ by one sample when the world intervals do not divide evenly.
 
 **Supported ancestor nodes:** Mountain, Noise, Adjust (autolevel off), Blur
 (with exact clipped input halos, including nested blurs), and Blend. A

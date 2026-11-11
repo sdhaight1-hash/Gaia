@@ -38,7 +38,6 @@ impl Region {
 pub struct RegionLayout {
     pub resolution: usize,
     pub tiles_per_axis: usize,
-    stride: usize,
 }
 
 impl RegionLayout {
@@ -48,22 +47,23 @@ impl RegionLayout {
         {
             return Err("Region tiles require resolution 32–8192 and 2–64 tiles per axis".into());
         }
-        Ok(Self {
-            resolution, tiles_per_axis,
-            stride: (resolution - 1).div_ceil(tiles_per_axis),
-        })
+        Ok(Self { resolution, tiles_per_axis })
     }
 
     /// Adjacent tiles share one world sample, without upsampling/cropping.
-    /// The right/bottom tiles can be narrower when resolution is not divisible.
+    /// Tile widths can differ by one sample when the intervals are not divisible.
     pub fn tile(&self, x: usize, y: usize) -> Result<Region, String> {
         if x >= self.tiles_per_axis || y >= self.tiles_per_axis {
             return Err("Region tile index outside grid".into());
         }
-        let left = x * self.stride;
-        let top = y * self.stride;
-        let right = ((x + 1) * self.stride).min(self.resolution - 1);
-        let bottom = ((y + 1) * self.stride).min(self.resolution - 1);
+        // Divide the (N-1) intervals evenly, not via a rounded-up
+        // stride. The latter can start later tiles past the world edge
+        // when tile count is large compared with the resolution.
+        let intervals = self.resolution - 1;
+        let left = x * intervals / self.tiles_per_axis;
+        let top = y * intervals / self.tiles_per_axis;
+        let right = (x + 1) * intervals / self.tiles_per_axis;
+        let bottom = (y + 1) * intervals / self.tiles_per_axis;
         let rect = Region {
             x: left, y: top,
             width: right - left + 1, height: bottom - top + 1,
@@ -375,6 +375,33 @@ mod tests {
             .is_err());
         assert!(evaluate_region(&graph, 64, &PortRef::height(noise),
             Region { x: 60, y: 0, width: 6, height: 8 }).is_err());
+    }
+
+    #[test]
+    fn high_tile_count_stays_inside_world_and_never_produces_empty_tiles() {
+        for size in [32, 33, 65, 127] {
+            for count in 2..=64.min(size - 1) {
+                let layout = RegionLayout::new(size, count).unwrap();
+                for ty in 0..count {
+                    for tx in 0..count {
+                        let rect = layout.tile(tx, ty).unwrap();
+                        rect.validate(size).unwrap();
+                        assert!(rect.width >= 2 && rect.height >= 2);
+                        if tx > 0 {
+                            let prev = layout.tile(tx - 1, ty).unwrap();
+                            assert_eq!(prev.x + prev.width - 1, rect.x);
+                        }
+                        if ty > 0 {
+                            let prev = layout.tile(tx, ty - 1).unwrap();
+                            assert_eq!(prev.y + prev.height - 1, rect.y);
+                        }
+                    }
+                }
+                let last = layout.tile(count - 1, count - 1).unwrap();
+                assert_eq!(last.x + last.width, size);
+                assert_eq!(last.y + last.height, size);
+            }
+        }
     }
 
     #[test]
