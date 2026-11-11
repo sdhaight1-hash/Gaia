@@ -68,6 +68,24 @@ and lake routing may require larger context buckets, not finite static halos.
 | 200 iterations, seed/parameter sweeps | Finite nonnegative water/solids |
 | 4K/8K target Windows hardware | Measured peak process RSS and wall time |
 
+## Implemented experimental stripe checkpoint (2026-11-11)
+
+`src/hydraulic_stream.rs` now provides a **transport-only** file-backed
+horizontal-stripe scheduler. It accepts finite/nonnegative height/water/sediment
+rows, writes each field to temporary little-endian f32 backing files, reads
+same-tick neighboring rows to calculate the existing canonical donor fluxes,
+and writes a complete next-step water/sediment/flow state to new temporary
+files. A successful tick swaps the files atomically at the in-process state
+level; errors and cancellation preserve the prior committed tick. Stripe size
+changes work scheduling, not hydraulic boundary behavior.
+
+This prototype's resident scalar scratch space is O(world width), rather than
+O(world area). This **is not** a full regional hydraulic solver: rain,
+evaporation, erosion/deposition, region graph integration, durable disk caches,
+restart across processes and arbitrary two-dimensional core scheduling are
+absent. Temp-file disk capacity and I/O cost remain unbenchmarked at 4K/8K.
+The normal region CLI must keep rejecting global hydraulic operations.
+
 ## Narrow implementation sequence
 
 1. Extract a pure canonical interior-face flux operator from the existing
