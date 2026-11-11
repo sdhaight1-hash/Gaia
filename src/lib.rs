@@ -10,3 +10,4 @@ pub mod drainage;
 pub mod tiles;
 pub mod adjust;
 pub mod normals;
+pub mod depression;
