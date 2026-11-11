@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/gui-tiled-export` (stacked on preceding PRs).
+Development branch: `feat/normal-map-output` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -32,7 +32,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Left **Node Library**: Mountain, Island, Volcano, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
   Curvature, Aspect Mask, Drainage, Elevation Mask, Mask Levels, Warp,
-  Blend, Masked Blend, Colorize and Color Mixer.
+  Blend, Masked Blend, Normals, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
   first compatible input to the selected output port and places it beside the
@@ -53,7 +53,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   `Ctrl+O`, `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
   drags coalesce into one undo step; history holds the last 64 edits.
   Save/Open use an editable project path, not file dialogs.
-- Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color maps,
+- Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color and
+  derived normal maps (flat tangent normal RGB ≈128,128,255; green-axis flip),
   or 2×2 / 4×4 overlapping PNG tile grids for the currently selected output
   directly from the desktop Export menu (also supported by the headless CLI),
   or OBJ terrain meshes. Color is stored as typed RGBA data in the graph,
