@@ -421,6 +421,112 @@ mod tests {
     }
 
     #[test]
+    fn batch_flag_validates_node_and_conflicting_selected_port() {
+        let args = |tail: &[&str]| {
+            let mut base = vec![
+                "--demo".to_string(), "--output".to_string(), "x".to_string()
+            ];
+            base.extend(tail.iter().map(|s| s.to_string()));
+            base
+        };
+        assert_eq!(parse_args(args(&["--all-outputs", "2"])).unwrap()
+            .unwrap().all_outputs, Some(2));
+        assert!(parse_args(args(&["--all-outputs", "0"])).is_err());
+        assert!(parse_args(args(&["--all-outputs", "bogus"])).is_err());
+        assert!(parse_args(args(&["--all-outputs", "2", "--port", "2:wear"])).is_err());
+        assert!(parse_args(args(&["--all-outputs", "2", "--all-outputs", "3"])).is_err());
+    }
+
+    #[test]
+    fn batch_builds_every_erosion_port_once_and_exports_compatible_tiles() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("gaia-batch-{}-{unique}", process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let stem = root.join("erosion");
+        build(Options {
+            project: None,
+            output: stem.clone(), resolution: Some(32),
+            selected: None, all_outputs: Some(2),
+            demo: true, no_obj: false, tiles: Some(2),
+        }).unwrap();
+        let report_path = suffixed(&stem, ".batch.report.json").unwrap();
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(report_path).unwrap()).unwrap();
+        assert_eq!(report["output_count"], 3);
+        assert_eq!(report["computed_nodes"], 2);
+        assert!(report["reused_nodes"].as_u64().unwrap() >= 4);
+        assert_eq!(report["outputs"].as_array().unwrap().len(), 3);
+        for port in ["height", "wear", "deposits"] {
+            let base = suffixed(&stem, &format!(".node2.{port}")).unwrap();
+            let image = suffixed(&base, ".png").unwrap();
+            assert!(image.is_file());
+            let input = std::fs::File::open(&image).unwrap();
+            let reader = png::Decoder::new(std::io::BufReader::new(input));
+            let image = reader.read_info().unwrap();
+            assert_eq!(image.info().color_type, png::ColorType::Grayscale);
+            assert_eq!(image.info().bit_depth, png::BitDepth::Sixteen);
+            assert!(suffixed(&base, ".tiles.json").unwrap().exists());
+            assert!(suffixed(&base, ".tiles").unwrap()
+                .join("x01_y01.png").is_file());
+        }
+        assert!(suffixed(&suffixed(&stem, ".node2.height").unwrap(), ".obj")
+            .unwrap().exists());
+        assert!(!suffixed(&suffixed(&stem, ".node2.wear").unwrap(), ".obj")
+            .unwrap().exists());
+        let standalone = root.join("solo");
+        build(Options {
+            project: None,
+            output: standalone.clone(), resolution: Some(32),
+            selected: Some(PortRef::new(2, "wear")), all_outputs: None,
+            demo: true, no_obj: true, tiles: None,
+        }).unwrap();
+        assert_eq!(std::fs::read(
+            suffixed(&suffixed(&stem, ".node2.wear").unwrap(), ".png").unwrap()
+        ).unwrap(), std::fs::read(standalone.with_extension("png")).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_color_port_uses_real_rgb8_export() {
+        use gaia::terrain::NodeKind;
+        let mut project = Project::default();
+        project.resolution = 32;
+        let node = project.graph.add(NodeKind::Colorize {
+            low: [1.0,0.0,0.0], high: [0.0,0.0,1.0],
+            midpoint: 0.5, contrast: 1.0,
+        });
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("gaia-batch-color-{}-{unique}", process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let scene = root.join("colors.gaia.json");
+        project.save(&scene).unwrap();
+        let stem = root.join("batch");
+        build(Options {
+            project: Some(scene),
+            output: stem.clone(), resolution: None,
+            selected: None, all_outputs: Some(node),
+            demo: false, no_obj: false, tiles: None,
+        }).unwrap();
+        let png = suffixed(&stem, &format!(".node{node}.color.png")).unwrap();
+        let img = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(png).unwrap()
+        )).read_info().unwrap();
+        assert_eq!(img.info().color_type, png::ColorType::Rgb);
+        assert_eq!(img.info().bit_depth, png::BitDepth::Eight);
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(suffixed(&stem, ".batch.report.json").unwrap()).unwrap()
+        ).unwrap();
+        assert_eq!(report["outputs"][0]["type"], "Color");
+        assert_eq!(report["outputs"][0]["png_format"], "RGB8");
+        assert!(report["outputs"][0]["obj"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn accepts_mask_output_without_mesh() {
         let options = parse_args(vec![
             "--demo".into(), "--output".into(), "out".into(),
