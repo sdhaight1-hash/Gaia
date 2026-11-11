@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/integrated-color-surfaces` (stacked on preceding PRs).
+Development branch: `feat/3d-color-preview` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -39,6 +39,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
+  Selecting a Color graph port and switching to 3D paints that RGBA map's
+  RGB channels over the terrain geometry (per-vertex lighting preserved).
 - Center **2D map**: choose any existing node output port (height,
   wear, deposits, flow, water, sediment, slope, curvature, aspect,
   elevation mask, color)
@@ -114,8 +116,8 @@ adapter is available; that is **not** evidence of GPU correctness.
   **not** numerically or visually identical to Gaea's erosion solvers.
 - GPU blending requires a working GPU and needs performance profiling.
   There is no claim that GPU compute is faster for every graph operation.
-- The 3D preview uses depth-tested wgpu rendering; RGBA Color is shown
-  in the 2D selected-map preview, not yet mapped onto 3D materials.
+- The 3D preview uses depth-tested wgpu rendering and selected Color-map
+  vertex colors. It does not yet implement PBR materials or texture layers.
 - Windows screenshot/video sign-off is still required for the 1080p UI.
 
 ## Source layout
