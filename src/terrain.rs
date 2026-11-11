@@ -27,6 +27,7 @@ impl HeightField {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NodeKind {
     Mountain { seed: u32, frequency: f32, height: f32 },
+    ImportHeight { path: String, scale: f32 }, 
     Range { seed: u32, height: f32, roughness: f32 },
     Crater { seed: u32, radius: f32, depth: f32, rim: f32 },
     Dunes { seed: u32, frequency: f32, amplitude: f32 },
