@@ -18,6 +18,14 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
         assert_eq!(field.kind, PortType::Mask);
         masks.push(field.data);
     }
+    let packed = cache.evaluate(&project.graph, 32,
+        &PortRef::new(material, "splat")).unwrap();
+    assert_eq!(packed.kind, PortType::Splat);
+    let rgba = packed.color.as_ref().unwrap();
+    for i in 0..1024 {
+        assert_eq!(rgba.pixels[i], [masks[0].values[i], masks[1].values[i],
+            masks[2].values[i], masks[3].values[i]]);
+    }
     assert_eq!(cache.stats.computed, 0);
     assert_eq!(cache.stats.reused, 2);
     for i in 0..1024 {
@@ -60,6 +68,17 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
         assert_eq!(img.info().color_type, png::ColorType::Grayscale);
         assert_eq!(img.info().bit_depth, png::BitDepth::Sixteen);
         assert_eq!((img.info().width, img.info().height), (32, 32));
+    }
+    let splat_path = stem.with_file_name(format!("layers.node{material}.splat.png"));
+    let mut splat = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(splat_path).unwrap())).read_info().unwrap();
+    assert_eq!(splat.info().color_type, png::ColorType::Rgba);
+    assert_eq!(splat.info().bit_depth, png::BitDepth::Eight);
+    let mut bytes = vec![0; splat.output_buffer_size()];
+    splat.next_frame(&mut bytes).unwrap();
+    for channels in bytes.chunks_exact(4) {
+        let sum: i32 = channels.iter().map(|v| i32::from(*v)).sum();
+        assert!((sum - 255).abs() <= 1, "packed weights should sum to 255 ± 1");
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

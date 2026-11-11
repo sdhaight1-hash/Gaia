@@ -81,9 +81,51 @@ pub fn export_rgb8(field: &ColorField, path: &Path) -> Result<(), String> {
     writer.write_image_data(&bytes).map_err(|error| error.to_string())
 }
 
+/// RGBA8 export for four-channel material splat weights.
+/// Unlike an opaque color map, the alpha channel is essential data.
+pub fn export_rgba8(field: &ColorField, path: &Path) -> Result<(), String> {
+    if field.size == 0 || field.size.checked_mul(field.size) != Some(field.pixels.len())
+        || field.pixels.iter().any(|pixel| pixel.iter().any(|c| !c.is_finite()))
+    {
+        return Err("RGBA8 export requires a finite square colorfield".into());
+    }
+    let output = std::io::BufWriter::new(
+        std::fs::File::create(path).map_err(|error| error.to_string())?
+    );
+    let mut encoder = png::Encoder::new(output, field.size as u32, field.size as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(field.pixels.len() * 4);
+    for pixel in &field.pixels {
+        for &component in pixel {
+            bytes.push((component.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+    }
+    writer.write_image_data(&bytes).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba_export_preserves_fourth_weight_channel() {
+        let field = ColorField::flat(2, [0.1, 0.2, 0.3, 0.4]);
+        let path = std::env::temp_dir().join(format!(
+            "gaia-splat-{}-{}.png", std::process::id(),
+            std::time::SystemTime::now().duration_since(
+                std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        export_rgba8(&field, &path).unwrap();
+        let mut reader = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(&path).unwrap())).read_info().unwrap();
+        assert_eq!(reader.info().color_type, png::ColorType::Rgba);
+        let mut buf = vec![0; reader.output_buffer_size()];
+        reader.next_frame(&mut buf).unwrap();
+        assert_eq!(&buf[..4], &[26, 51, 77, 102]);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn palette_interpolates_and_is_bounded() {

@@ -62,7 +62,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   available for explicit paths and headless-style workflows. Unsaved edits are
   confirmed before replacing a project. Failed opens preserve the running
   project and filename.
-- Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color and
+- Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color,
+  RGBA8 packed material splat weights and
   derived normal maps (flat tangent normal RGB ≈128,128,255; green-axis flip),
   or 2×2 / 4×4 overlapping PNG tile grids for the currently selected output
   directly from the desktop Export menu (also supported by the headless CLI),
@@ -114,7 +115,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   sediment mass conservation or art-directable headwater masks.
 - Surface Material Masks node gives four mutually normalized coverage fields
   (sand, soil, rock, snow) from elevation and slope. Outputs can drive typed
-  Color Mixers or independent PNG16 material-layer exports.
+  Color Mixers or independent PNG16 material-layer exports. The same node
+  also exposes a typed RGBA8 splat output (R=sand, G=soil, B=rock, A=snow)
+  with a false-color preview and tiled/headless export.
 - Derived AO and Sunlight maps: eight-direction horizon occlusion and
   directional diffuse light with terrain self-shadow, both typed Mask outputs
   for color blending or PNG16 export. This is deterministic CPU raster

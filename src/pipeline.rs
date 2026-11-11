@@ -32,6 +32,7 @@ pub enum PortType {
     Height,
     Mask,
     Color,
+    Splat,
     Vector,
     Water,
     Points,
@@ -44,6 +45,7 @@ impl PortType {
             Self::Height => "Height",
             Self::Mask => "Mask",
             Self::Color => "Color",
+            Self::Splat => "Splat weights",
             Self::Vector => "Vector",
             Self::Water => "Water",
             Self::Points => "Points",
@@ -120,6 +122,16 @@ impl NodeOutputs {
         let preview = data.luminance();
         self.fields.insert(name.to_string(), FieldValue {
             kind: PortType::Color,
+            data: Arc::new(preview),
+            color: Some(Arc::new(data)),
+        });
+        self
+    }
+
+    fn with_splat(mut self, name: &str, data: ColorField) -> Self {
+        let preview = data.luminance();
+        self.fields.insert(name.to_owned(), FieldValue {
+            kind: PortType::Splat,
             data: Arc::new(preview),
             color: Some(Arc::new(data)),
         });
@@ -283,7 +295,8 @@ impl GraphCache {
                 if field.data.size != size || field.data.values.iter().any(|v| !v.is_finite()) {
                     return Err(format!("Node #{id} produced invalid '{name}' data"));
                 }
-                if field.kind == PortType::Color && field.color.as_ref().is_none_or(|color|
+                if matches!(field.kind, PortType::Color | PortType::Splat)
+                    && field.color.as_ref().is_none_or(|color|
                     color.size != size || color.pixels.len() != size * size
                         || color.pixels.iter().any(|rgba| rgba.iter().any(|v| !v.is_finite()))
                 ) {
@@ -344,6 +357,7 @@ impl NodeKind {
         const MATERIALS: &[(&str, PortType)] = &[
             ("sand", PortType::Mask), ("soil", PortType::Mask),
             ("rock", PortType::Mask), ("snow", PortType::Mask),
+            ("splat", PortType::Splat),
         ];
         const AO: &[(&str, PortType)] = &[("ao", PortType::Mask)];
         const SUNLIGHT: &[(&str, PortType)] = &[("light", PortType::Mask)];
@@ -561,11 +575,21 @@ fn evaluate_kind(
         NodeKind::MaterialMasks { sea_level, beach_width, rock_slope, rock_blend, snowline, snow_blend } => {
             let field = classify_materials(take(0), *sea_level, *beach_width,
                 *rock_slope, *rock_blend, *snowline, *snow_blend, &cancelled)?;
+            // Pack the same four normalized masks into one lossless-structure
+            // RGBA field (quantized to 8-bit only at PNG export).
+            let splat = ColorField {
+                size,
+                pixels: (0..size * size).map(|i| [
+                    field.sand.values[i], field.soil.values[i],
+                    field.rock.values[i], field.snow.values[i],
+                ]).collect(),
+            };
             NodeOutputs::default()
                 .with("sand", PortType::Mask, field.sand)
                 .with("soil", PortType::Mask, field.soil)
                 .with("rock", PortType::Mask, field.rock)
                 .with("snow", PortType::Mask, field.snow)
+                .with_splat("splat", splat)
         },
         NodeKind::AmbientOcclusion { radius, strength } => {
             NodeOutputs::default().with("ao", PortType::Mask,

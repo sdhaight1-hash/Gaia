@@ -7,7 +7,7 @@ use gaia::terrain::{export_obj, export_png16, HeightField, NodeKind, Node, Proje
 use gaia::pipeline::{PortRef, PortType};
 use gaia::worker::GraphWorker;
 use gaia::hydrology::HydraulicParameters;
-use gaia::color::{ColorField, export_rgb8};
+use gaia::color::{ColorField, export_rgb8, export_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -163,11 +163,18 @@ impl GaiaApp {
                 Ok(result) => {
                     self.field = result.height;
                     let image = if let Some(color) = &result.preview_color {
-                        color_image(color)
+                        if result.preview_kind == PortType::Splat {
+                            splat_preview_image(color)
+                        } else {
+                            color_image(color)
+                        }
                     } else {
                         height_image(&result.preview)
                     };
-                    self.material_color = result.preview_color;
+                    // Packed weights are not a paint color for the 3D mesh.
+                    self.material_color = if result.preview_kind == PortType::Color {
+                        result.preview_color
+                    } else { None };
                     if let Some(texture) = self.texture.as_mut() {
                         texture.set(image, egui::TextureOptions::LINEAR);
                     } else {
@@ -205,7 +212,10 @@ impl GaiaApp {
             Ok(value) => {
                 let path = Path::new(&self.filename)
                     .with_extension(format!("{}.png", self.preview_source.port));
-                self.status = match if let Some(color) = &value.color {
+                self.status = match if value.kind == PortType::Splat {
+                    value.color.as_ref().ok_or("Missing splat weights")
+                        .and_then(|data| export_rgba8(data, &path))
+                } else if let Some(color) = &value.color {
                     export_rgb8(color, &path)
                 } else {
                     export_png16(&value.data, &path)
@@ -232,10 +242,15 @@ impl GaiaApp {
             for y in 0..count {
                 for x in 0..count {
                     let path = folder.join(format!("x{x:02}_y{y:02}.png"));
-                    if output.kind == PortType::Color {
+                    if matches!(output.kind, PortType::Color | PortType::Splat) {
                         let color = output.color.as_ref()
-                            .ok_or("Selected color port has no RGBA data")?;
-                        export_rgb8(&tile_color(color, layout, x, y)?, &path)?;
+                            .ok_or("Selected color/splat port has no RGBA data")?;
+                        let tile = tile_color(color, layout, x, y)?;
+                        if output.kind == PortType::Splat {
+                            export_rgba8(&tile, &path)?;
+                        } else {
+                            export_rgb8(&tile, &path)?;
+                        }
                     } else {
                         export_png16(&tile_height(&output.data, layout, x, y)?, &path)?;
                     }
@@ -250,7 +265,11 @@ impl GaiaApp {
                 "source_resolution": self.project.resolution,
                 "output_node": self.preview_source.node,
                 "output_port": self.preview_source.port,
-                "format": if output.kind == PortType::Color { "RGB8" } else { "Grayscale16" },
+                "format": match output.kind {
+                    PortType::Splat => "RGBA8",
+                    PortType::Color => "RGB8",
+                    _ => "Grayscale16",
+                },
                 "folder": folder.display().to_string(),
                 "origin": "top-left, y increases downward",
                 "sampling": "global bilinear sampling with identical adjacent edges",
@@ -919,7 +938,7 @@ impl GaiaApp {
                         .text("Snowline")).changed();
                     changed |= ui.add(egui::Slider::new(snow_blend, 0.001..=0.5)
                         .text("Snow fade")).changed();
-                    ui.small("Four normalized masks for Color Mixer or --all-outputs PNG16 export.");
+                    ui.small("Four normalized masks plus an RGBA splat map (R sand, G soil, B rock, A snow). Export as PNG16 layers or RGBA8 packed weights.");
                     ui.small("Art-directed elevation/slope coverage; not climate or PBR shading.");
                 }
                 NodeKind::Normals { strength, flip_green } => {
@@ -1420,13 +1439,14 @@ impl GaiaApp {
         ui.painter().text(rect.left_bottom() + egui::vec2(16.0, -17.0),
             egui::Align2::LEFT_BOTTOM,
             if self.view_2d {
-                if self.project.graph.get(self.preview_source.node).is_some_and(|node| {
-                    node.kind.output_ports().iter()
-                        .any(|(port, ty)| *port == self.preview_source.port && *ty == PortType::Color)
-                }) {
-                    "Color output available as RGB8 PNG in Export"
-                } else {
-                    "Scalar output available as grayscale 16-bit PNG in Export"
+                let kind = self.project.graph.get(self.preview_source.node)
+                    .and_then(|node| node.kind.output_ports().iter()
+                        .find(|(port, _)| *port == self.preview_source.port))
+                    .map(|(_, kind)| *kind);
+                match kind {
+                    Some(PortType::Splat) => "SPLAT • R=sand  G=soil  B=rock  A=snow  ·  RGBA8 export",
+                    Some(PortType::Color) => "Color output available as RGB8 PNG in Export",
+                    _ => "Scalar output available as grayscale 16-bit PNG in Export",
                 }
             }
             else if self.material_color.is_some() {
@@ -1564,6 +1584,24 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::MaterialMasks { .. } | NodeKind::AmbientOcclusion { .. } | NodeKind::Sunlight { .. } | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
+}
+
+/// A false-color material preview; the actual export contains RGBA weights.
+/// Sand=tan, soil=green, rock=slate, snow=white.
+fn splat_preview_image(weights: &ColorField) -> egui::ColorImage {
+    const PALETTE: [[f32; 3]; 4] = [
+        [0.76, 0.63, 0.41], [0.20, 0.39, 0.21],
+        [0.48, 0.49, 0.52], [0.92, 0.95, 0.99],
+    ];
+    let mut rgba = Vec::with_capacity(weights.pixels.len() * 4);
+    for weight in &weights.pixels {
+        for c in 0..3 {
+            let value: f32 = (0..4).map(|layer| weight[layer] * PALETTE[layer][c]).sum();
+            rgba.push((value.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+        rgba.push(255);
+    }
+    egui::ColorImage::from_rgba_unmultiplied([weights.size, weights.size], &rgba)
 }
 
 fn color_image(field: &ColorField) -> egui::ColorImage {

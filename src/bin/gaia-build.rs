@@ -1,7 +1,7 @@
 //! Standalone deterministic terrain build tool.
 //! No window or GPU required; intended for production pipelines and CI.
 use gaia::pipeline::{GraphCache, PortRef, PortType};
-use gaia::color::export_rgb8;
+use gaia::color::{export_rgb8, export_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
@@ -19,7 +19,8 @@ Examples:
   gaia-build --project terrain.gaia.json --output builds/land --tiles 4
   gaia-build --project terrain.gaia.json --output builds/erosion --all-outputs 2
 
-Exports PNG16 for scalar fields, RGB8 for Color fields, and OBJ for height outputs.
+Exports PNG16 for scalar fields, RGB8 for Color, RGBA8 for Splat weights,
+and OBJ for height outputs.
 Writes STEM.report.json. --tiles produces N×N PNGs in STEM.tiles/ plus
 STEM.tiles.json, each tile sharing one identical border pixel with neighbors.
 This subdivides an already-built field; it does not reduce graph build memory.
@@ -155,7 +156,10 @@ fn build_all_outputs(
         reused += cache.stats.reused;
         let stem = suffixed(&options.output, &format!(".node{}.{}", node_id, port.port))?;
         let png = suffixed(&stem, ".png")?;
-        let format = if field.kind == PortType::Color {
+        let format = if field.kind == PortType::Splat {
+            export_rgba8(field.color.as_ref().ok_or("Splat weights missing RGBA data")?, &png)?;
+            "RGBA8"
+        } else if field.kind == PortType::Color {
             let color = field.color.as_ref()
                 .ok_or("Color field has no RGBA source data")?;
             export_rgb8(color, &png)?;
@@ -179,7 +183,10 @@ fn build_all_outputs(
             for ty in 0..count {
                 for tx in 0..count {
                     let file = folder.join(format!("x{tx:02}_y{ty:02}.png"));
-                    if field.kind == PortType::Color {
+                    if field.kind == PortType::Splat {
+                        let colors = field.color.as_ref().ok_or("Splat weights missing RGBA data")?;
+                        export_rgba8(&tile_color(colors, layout, tx, ty)?, &file)?;
+                    } else if field.kind == PortType::Color {
                         let color = field.color.as_ref()
                             .ok_or("Color field has no RGBA source data")?;
                         export_rgb8(&tile_color(color, layout, tx, ty)?, &file)?;
@@ -221,7 +228,9 @@ fn build_all_outputs(
             "png": png.display().to_string(),
             "obj": obj,
             "tile_manifest": tile_manifest,
-            "statistics_channel": if field.kind == PortType::Color {
+            "statistics_channel": if field.kind == PortType::Splat {
+                "RGB weighted proxy; A not included"
+            } else if field.kind == PortType::Color {
                 "Rec709 luminance proxy"
             } else { "raw scalar" },
             "min_raw": min,
@@ -275,7 +284,10 @@ fn build(options: Options) -> Result<(), String> {
         }
     }
     let png = options.output.with_extension("png");
-    let png_format = if field.kind == PortType::Color {
+    let png_format = if field.kind == PortType::Splat {
+        export_rgba8(field.color.as_ref().ok_or("Splat weights missing RGBA data")?, &png)?;
+        "RGBA8"
+    } else if field.kind == PortType::Color {
         let color = field.color.as_ref().ok_or("Color output has no RGBA field")?;
         export_rgb8(color, &png)?;
         "RGB8"
@@ -298,7 +310,10 @@ fn build(options: Options) -> Result<(), String> {
         for ty in 0..count {
             for tx in 0..count {
                 let file = directory.join(format!("x{tx:02}_y{ty:02}.png"));
-                if field.kind == PortType::Color {
+                if field.kind == PortType::Splat {
+                    let colors = field.color.as_ref().ok_or("Splat weights missing RGBA data")?;
+                    export_rgba8(&tile_color(colors, layout, tx, ty)?, &file)?;
+                } else if field.kind == PortType::Color {
                     let color = field.color.as_ref()
                         .ok_or("Color output has no RGBA data for tiling")?;
                     export_rgb8(&tile_color(color, layout, tx, ty)?, &file)?;
@@ -348,10 +363,17 @@ fn build(options: Options) -> Result<(), String> {
         "png_format": png_format,
         "png16": if png_format == "Grayscale16" { Some(png.display().to_string()) } else { None },
         "rgb8": if png_format == "RGB8" { Some(png.display().to_string()) } else { None },
-        "statistics_channel": if png_format == "RGB8" { "Rec709 luminance proxy" } else { "raw scalar" },
+        "rgba8": if png_format == "RGBA8" { Some(png.display().to_string()) } else { None },
+        "statistics_channel": match png_format {
+            "RGB8" => "Rec709 luminance proxy",
+            "RGBA8" => "RGB weight proxy, alpha excluded",
+            _ => "raw scalar",
+        },
         "obj": obj,
         "tile_manifest": tile_metadata,
-        "png_normalization": if png_format == "RGB8" {
+        "png_normalization": if png_format == "RGBA8" {
+            "clamp all four weight channels to [0,1] and multiply by 255"
+        } else if png_format == "RGB8" {
             "clamp RGB channels to [0,1] and multiply by 255; discard alpha"
         } else {
             "clamp raw values to [0,1] and multiply by 65535"
