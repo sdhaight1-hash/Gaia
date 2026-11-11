@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/project-relative-heightmaps` (stacked on preceding PRs).
+Development branch: `feat/safe-node-deletion` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -33,7 +33,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   Canyon, thermal erosion, hydraulic erosion, Terrace, Blur, Slope Mask,
   Curvature, Elevation Mask, Warp, Blend and Masked Blend.
 - Bottom graph: click/select and drag nodes; connect compatible named
-  outputs to typed inputs in the right **Inspector**.
+  output and input sockets directly. Unused nodes can be deleted in the
+  right **Inspector**; nodes with dependents are protected.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
