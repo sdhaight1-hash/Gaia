@@ -201,9 +201,9 @@ See \`src/terrain.rs\` persistence tests.
   with CPU fallback when no GPU device was supplied. GPU numerical
   verification on a target machine is still required.
 
-## Bounded-memory regional terrain builds (Height + Mask)
+## Bounded-memory regional terrain builds (Height, Mask and RGB Color)
 
-For selected **local Height and Mask graphs** Gaia can evaluate exact world-grid
+For selected **local Height, Mask and Color graphs** Gaia can evaluate exact world-grid
 regions directly, rather than calculating and retaining an entire heightfield
 and then subdividing it:
 
@@ -217,6 +217,17 @@ named output (the node ID here is illustrative):
 ```powershell
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --port 8:slope --output builds/slope-regions --resolution 4096 --region-tiles 8 --no-obj
 ```
+
+To export a **Color Mixer**'s actual RGB texture tiles:
+
+```powershell
+cargo run --release --bin gaia-build -- --project terrain.gaia.json --port 12:color --output builds/color-regions --resolution 4096 --region-tiles 8 --no-obj
+```
+
+In these two project commands, the node IDs are illustrative: choose the
+actual output node in your saved graph. Color regions are RGB8 PNG, not
+grayscale previews; they use the same per-pixel math as full-grid Colorize
+and Color Mixer.
 
 Region builds preflight the requested port **and** its connected ancestors.
 An unavailable port or incompatible global operation fails explicitly; the
@@ -233,14 +244,16 @@ widths can differ by one sample when the world intervals do not divide evenly.
 
 **Supported ancestor nodes:** Mountain, Noise, Adjust (autolevel off), Blur
 (with exact clipped input halos, including nested blurs), Blend, Slope and
-Curvature (one-sample halos), Elevation Mask, Mask Levels, and Masked Blend
-using a typed Mask input. Region outputs can be either Height or Mask,
-both serialized as grayscale PNG16 with the actual field type in reports.
+Curvature and Aspect (one-sample halos), Elevation Mask, Mask Levels,
+Masked Blend using a typed Mask input, Colorize and Color Mixer with a typed
+Mask input. Region outputs can be Height or Mask as grayscale PNG16, or Color
+as RGB8 (with real RGB channels). The report and manifest retain the output
+type and format; Color reports summarize a Rec.709 luminance proxy.
 A disconnected unrelated node need not be region-compatible. Other nodes,
 including hydraulic/thermal erosion, autolevel, materials and global drainage,
 fail with a clear error **before** writing output; they are not evaluated
 with a hidden full-world fallback. There is deliberately no stitched whole
-PNG, OBJ mesh, Color/Splat port, batch export or GUI region job in this phase.
+PNG, OBJ mesh, Splat weights / normal maps, batch export or GUI region job in this phase.
 Use ordinary `--tiles` when you need the legacy export-only
 subdivision of an already built global graph. Peak memory in the region
 report covers live intermediate float samples; it excludes PNG encoding and

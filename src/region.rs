@@ -7,6 +7,7 @@
 //! scientifically valid region/bucket algorithms.
 use crate::pipeline::{PortRef, PortType};
 use crate::terrain::{Graph, NodeKind, sample_mountain, sample_noise};
+use crate::color::{mix_pixel, palette_pixel};
 use std::path::Path;
 
 pub const MAX_REGION_RESOLUTION: usize = 8192;
@@ -107,6 +108,38 @@ impl RegionField {
     }
 }
 
+/// A region of genuine RGB color values (alpha stays available for graph
+/// evaluation). Unlike a scalar proxy, these retain all RGBA channels.
+#[derive(Clone, Debug)]
+pub struct RegionColorField {
+    pub region: Region,
+    pub pixels: Vec<[f32; 4]>,
+}
+
+impl RegionColorField {
+    /// Matches the ordinary full-grid Color PNG export: RGB8, no alpha.
+    pub fn export_rgb8(&self, path: &Path) -> Result<(), String> {
+        if self.region.area() != self.pixels.len() ||
+            self.pixels.iter().flatten().any(|v| !v.is_finite())
+        {
+            return Err("Color region requires complete finite RGBA pixels".into());
+        }
+        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file),
+            self.region.width as u32, self.region.height as u32);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        let mut bytes = Vec::with_capacity(self.pixels.len() * 3);
+        for pixel in &self.pixels {
+            for &channel in pixel.iter().take(3) {
+                bytes.push((channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+        }
+        writer.write_image_data(&bytes).map_err(|e| e.to_string())
+    }
+}
+
 /// Upper bound on simultaneously resident intermediate float samples for
 /// each region request. Does not include PNG encoder buffers or OS overhead.
 #[derive(Clone, Copy, Debug, Default)]
@@ -131,8 +164,11 @@ fn supported_port(kind: &NodeKind, name: &str) -> Option<PortType> {
          NodeKind::MaskedBlend { .. }, "height") => Some(PortType::Height),
         (NodeKind::Slope, "slope") |
         (NodeKind::Curvature, "curvature") |
+        (NodeKind::Aspect { .. }, "aspect") |
         (NodeKind::ElevationMask { .. }, "mask") |
         (NodeKind::MaskLevels { .. }, "mask") => Some(PortType::Mask),
+        (NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. }, "color") =>
+            Some(PortType::Color),
         _ => None,
     }
 }
@@ -175,9 +211,84 @@ pub fn evaluate_region_cancellable(graph: &Graph, resolution: usize,
 ) -> Result<(RegionField, RegionStats), String> {
     rect.validate(resolution)?;
     validate_region_graph(graph, source)?;
+    if !matches!(supported_port(&graph.get(source.node)
+        .ok_or("Region source node missing")?.kind, &source.port),
+        Some(PortType::Height | PortType::Mask))
+    {
+        return Err("Use evaluate_color_region for Color outputs".into());
+    }
     let mut stats = RegionStats::default();
     let field = evaluate(graph, resolution, source, rect, 0, &mut stats, &cancelled)?;
     Ok((field, stats))
+}
+
+/// Region-color evaluation is explicit: callers cannot accidentally turn an
+/// RGBA output into a grayscale Height/Mask field. Graph validation checks all
+/// requested ancestors before building a tile.
+pub fn evaluate_color_region(
+    graph: &Graph, resolution: usize, source: &PortRef, rect: Region,
+) -> Result<(RegionColorField, RegionStats), String> {
+    evaluate_color_region_cancellable(graph, resolution, source, rect, || false)
+}
+
+pub fn evaluate_color_region_cancellable(
+    graph: &Graph, resolution: usize, source: &PortRef, rect: Region,
+    cancelled: impl Fn() -> bool,
+) -> Result<(RegionColorField, RegionStats), String> {
+    rect.validate(resolution)?;
+    validate_region_graph(graph, source)?;
+    if supported_port(&graph.get(source.node)
+        .ok_or("Region color source missing")?.kind, &source.port) != Some(PortType::Color)
+    {
+        return Err("Requested output is not a supported Color port".into());
+    }
+    let mut stats = RegionStats::default();
+    let field = evaluate_color(graph, resolution, source, rect, 0, &mut stats, &cancelled)?;
+    Ok((field, stats))
+}
+
+fn evaluate_color(
+    graph: &Graph, size: usize, source: &PortRef, rect: Region,
+    retained: usize, stats: &mut RegionStats, cancelled: &impl Fn() -> bool,
+) -> Result<RegionColorField, String> {
+    if cancelled() { return Err("Build cancelled".into()); }
+    let node = graph.get(source.node).ok_or("Missing color node")?;
+    if supported_port(&node.kind, &source.port) != Some(PortType::Color) {
+        return Err(format!("Unsupported regional color output #{}:{}",
+            source.node, source.port));
+    }
+    stats.computed_regions += 1;
+    let pixels = match &node.kind {
+        NodeKind::Colorize { low, high, midpoint, contrast } => {
+            let height = evaluate(graph, size, &node.inputs[0], rect,
+                retained, stats, cancelled)?;
+            let mut pixels = Vec::with_capacity(rect.area());
+            for (i, &h) in height.values.iter().enumerate() {
+                if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
+                pixels.push(palette_pixel(h, *low, *high, *midpoint, *contrast));
+            }
+            stats.observe(retained + height.values.len() + pixels.len() * 4);
+            pixels
+        },
+        NodeKind::ColorMixer { mix } => {
+            let a = evaluate_color(graph, size, &node.inputs[0], rect,
+                retained, stats, cancelled)?;
+            let b = evaluate_color(graph, size, &node.inputs[1], rect,
+                retained + a.pixels.len() * 4, stats, cancelled)?;
+            let mask = evaluate(graph, size, &node.inputs[2], rect,
+                retained + (a.pixels.len() + b.pixels.len()) * 4, stats, cancelled)?;
+            let mut pixels = Vec::with_capacity(rect.area());
+            for i in 0..rect.area() {
+                if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
+                pixels.push(mix_pixel(a.pixels[i], b.pixels[i], mask.values[i], *mix));
+            }
+            stats.observe(retained + (a.pixels.len() + b.pixels.len() +
+                pixels.len()) * 4 + mask.values.len());
+            pixels
+        },
+        other => return Err(format!("Unsupported regional color node: {}", other.label())),
+    };
+    Ok(RegionColorField { region: rect, pixels })
 }
 
 fn halo_rect(rect: Region, size: usize, radius: usize) -> Region {
@@ -319,7 +430,7 @@ fn evaluate(graph: &Graph, size: usize, source: &PortRef, rect: Region,
             }
             stats.observe(retained + input.values.len() + values.len());
         }
-        NodeKind::Slope | NodeKind::Curvature => {
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } => {
             // First-order 4-neighbor differential. Nested local operations
             // request their own halos transitively, cropped at the world edge.
             let halo = halo_rect(rect, size, 1);
@@ -347,6 +458,35 @@ fn evaluate(graph: &Graph, size: usize, source: &PortRef, rect: Region,
                             let h = input.get(gx, gy);
                             let laplacian = (l + r + u + d - 4.0 * h) * 18.0;
                             0.5 + 0.5 * laplacian.clamp(-1.0, 1.0)
+                        },
+                        NodeKind::Aspect { azimuth, half_width, min_slope } => {
+                            if !azimuth.is_finite() || !half_width.is_finite() ||
+                                !min_slope.is_finite() || !(0.0..=360.0).contains(azimuth) ||
+                                !(1.0..=180.0).contains(half_width) ||
+                                !(0.0..=2.0).contains(min_slope)
+                            {
+                                0.0
+                            } else {
+                                let left = gx.saturating_sub(1);
+                                let right = (gx + 1).min(size - 1);
+                                let up = gy.saturating_sub(1);
+                                let down = (gy + 1).min(size - 1);
+                                let world_scale = (size - 1) as f32;
+                                let dx = (r - l) * world_scale / (right - left) as f32;
+                                let dy = (d - u) * world_scale / (down - up) as f32;
+                                let slope = dx.hypot(dy);
+                                if !slope.is_finite() || slope <= *min_slope || slope <= 1e-7 {
+                                    0.0
+                                } else {
+                                    let facing = (-dx).atan2(dy);
+                                    let target = azimuth.to_radians();
+                                    let width = half_width.to_radians();
+                                    let distance = (facing - target).sin()
+                                        .atan2((facing - target).cos()).abs();
+                                    let proximity = (1.0 - distance / width).clamp(0.0, 1.0);
+                                    proximity * proximity * (3.0 - 2.0 * proximity)
+                                }
+                            }
                         },
                         _ => unreachable!(),
                     };
@@ -519,6 +659,152 @@ mod tests {
             assert!(stats.peak_working_samples < 4096 * 4096 / 4,
                 "region path should not allocate full-grid intermediates");
         }
+    }
+
+    fn color_mask_graph() -> (Graph, PortRef, PortRef) {
+        let mut graph = Project::default().graph;
+        let noise = graph.add(NodeKind::Noise {
+            seed: 17, frequency: 6.2, amplitude: 0.9,
+        });
+        let blur = graph.add(NodeKind::Blur { radius: 3 });
+        graph.connect(blur, 0, PortRef::height(noise)).unwrap();
+        let mountain = graph.add(NodeKind::Mountain {
+            seed: 62, frequency: 4.4, height: 1.0,
+        });
+        let aspect = graph.add(NodeKind::Aspect {
+            azimuth: 310.0, half_width: 80.0, min_slope: 0.12,
+        });
+        graph.connect(aspect, 0, PortRef::height(blur)).unwrap();
+        let levels = graph.add(NodeKind::MaskLevels {
+            black: 0.1, white: 0.92, gamma: 1.35, invert: false,
+        });
+        graph.connect(levels, 0, PortRef::new(aspect, "aspect")).unwrap();
+        let cool = graph.add(NodeKind::Colorize {
+            low: [0.1, 0.3, 0.4], high: [0.75, 0.95, 0.8],
+            midpoint: 0.45, contrast: 1.6,
+        });
+        graph.connect(cool, 0, PortRef::height(blur)).unwrap();
+        let warm = graph.add(NodeKind::Colorize {
+            low: [0.6, 0.2, 0.1], high: [1.0, 0.9, 0.38],
+            midpoint: 0.55, contrast: 1.15,
+        });
+        graph.connect(warm, 0, PortRef::height(mountain)).unwrap();
+        let mixed = graph.add(NodeKind::ColorMixer { mix: 0.82 });
+        graph.connect(mixed, 0, PortRef::new(cool, "color")).unwrap();
+        graph.connect(mixed, 1, PortRef::new(warm, "color")).unwrap();
+        graph.connect(mixed, 2, PortRef::new(levels, "mask")).unwrap();
+        (graph, PortRef::new(aspect, "aspect"), PortRef::new(mixed, "color"))
+    }
+
+    #[test]
+    fn aspect_and_rgb_colors_match_full_fields_at_irregular_boundaries() {
+        let (graph, aspect, color) = color_mask_graph();
+        for size in [32, 65, 128] {
+            for count in [2, 3, 7] {
+                let layout = RegionLayout::new(size, count).unwrap();
+                let complete_mask = graph.evaluate_port(size, &aspect).unwrap().data;
+                let complete_color = graph.evaluate_port(size, &color).unwrap()
+                    .color.expect("full-grid color output");
+                let mut stitched_mask = vec![None; size * size];
+                let mut stitched_color = vec![None; size * size];
+                for ty in 0..count {
+                    for tx in 0..count {
+                        let rect = layout.tile(tx, ty).unwrap();
+                        let (mask, _) = evaluate_region(&graph, size, &aspect, rect).unwrap();
+                        let (rgb, _) = evaluate_color_region(&graph, size, &color, rect).unwrap();
+                        assert_eq!(mask.kind, PortType::Mask);
+                        for y in 0..rect.height {
+                            for x in 0..rect.width {
+                                let idx = (rect.y+y)*size+rect.x+x;
+                                let ix = y*rect.width+x;
+                                if let Some(v) = stitched_mask[idx] {
+                                    assert_eq!(v, mask.values[ix], "mask seam {size}/{count}");
+                                }
+                                if let Some(v) = stitched_color[idx] {
+                                    assert_eq!(v, rgb.pixels[ix], "RGB seam {size}/{count}");
+                                }
+                                stitched_mask[idx] = Some(mask.values[ix]);
+                                stitched_color[idx] = Some(rgb.pixels[ix]);
+                            }
+                        }
+                    }
+                }
+                for i in 0..size*size {
+                    let a = stitched_mask[i].unwrap();
+                    let b = complete_mask.values[i];
+                    assert!((a-b).abs() <= 1e-6,
+                        "aspect reference sample {i}: {a} / {b}");
+                    let rgba = stitched_color[i].unwrap();
+                    for channel in 0..4 {
+                        assert!((rgba[channel]-complete_color.pixels[i][channel]).abs() <= 1e-6,
+                            "color reference sample {i} channel {channel}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn color_region_is_bounded_and_scalar_api_rejects_color_ports() {
+        let (graph, aspect, color) = color_mask_graph();
+        let rect = RegionLayout::new(4096, 8).unwrap().tile(3, 2).unwrap();
+        let (rgba, stats) = evaluate_color_region(&graph, 4096, &color, rect).unwrap();
+        assert_eq!(rgba.pixels.len(), rect.width * rect.height);
+        assert!(stats.peak_working_samples >= rgba.pixels.len()*4);
+        assert!(stats.peak_working_samples < 4096*4096/4);
+        assert!(evaluate_region(&graph, 65, &color, Region {
+            x: 0, y: 0, width: 16, height: 16,
+        }).unwrap_err().contains("evaluate_color_region"));
+        assert!(evaluate_color_region(&graph, 65, &aspect, Region {
+            x: 0, y: 0, width: 16, height: 16,
+        }).is_err());
+        assert!(evaluate_color_region_cancellable(&graph, 65, &color, Region {
+            x: 0, y: 0, width: 16, height: 16,
+        }, || true).unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn region_rgb_png8_matches_reference_and_preserves_border_dimensions() {
+        let (graph, _, color) = color_mask_graph();
+        let layout = RegionLayout::new(65, 3).unwrap();
+        let rect = layout.tile(2, 1).unwrap();
+        let (tile, _) = evaluate_color_region(&graph, 65, &color, rect).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rgb.png");
+        tile.export_rgb8(&path).unwrap();
+        let mut reader = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(path).unwrap())).read_info().unwrap();
+        let mut bytes = vec![0_u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut bytes).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        assert_eq!(info.width as usize, rect.width);
+        assert_eq!(info.height as usize, rect.height);
+        let full = graph.evaluate_port(65, &color).unwrap().color.unwrap();
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                let expected = full.pixels[(rect.y+y)*65+rect.x+x];
+                for channel in 0..3 {
+                    let at = (y*rect.width+x)*3+channel;
+                    assert_eq!(bytes[at],
+                        (expected[channel].clamp(0.0,1.0)*255.0).round() as u8);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_aspect_parameters_keep_full_grid_zero_mask_behavior() {
+        let (mut graph, aspect, _) = color_mask_graph();
+        let node = graph.get_mut(aspect.node).unwrap();
+        node.kind = NodeKind::Aspect {
+            azimuth: f32::NAN, half_width: 0.0, min_slope: 3.0,
+        };
+        let roi = RegionLayout::new(65, 3).unwrap().tile(1, 1).unwrap();
+        let (region, _) = evaluate_region(&graph, 65, &aspect, roi).unwrap();
+        assert!(region.values.iter().all(|&x| x == 0.0));
+        assert!(graph.evaluate_port(65, &aspect).unwrap().data.values
+            .iter().all(|&x| x == 0.0));
     }
 
     #[test]

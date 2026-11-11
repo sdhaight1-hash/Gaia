@@ -25,26 +25,48 @@ impl ColorField {
     }
 }
 
+/// Exact per-sample counterpart of the full-grid Colorize operator.
+/// Both the full-grid and regional evaluators call this same implementation.
+pub(crate) fn palette_pixel(
+    h: f32, low: [f32; 3], high: [f32; 3], midpoint: f32, contrast: f32,
+) -> [f32; 4] {
+    let midpoint = midpoint.clamp(0.01, 0.99);
+    let contrast = contrast.clamp(0.1, 6.0);
+    let t = if h <= midpoint {
+        0.5 * (h.max(0.0) / midpoint)
+    } else {
+        0.5 + 0.5 * ((h - midpoint) / (1.0 - midpoint))
+    };
+    let shaped = ((t - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
+    let blend = shaped * shaped * (3.0 - 2.0 * shaped);
+    let mut pixel = [0.0, 0.0, 0.0, 1.0];
+    for channel in 0..3 {
+        let a = low[channel].clamp(0.0, 1.0);
+        let b = high[channel].clamp(0.0, 1.0);
+        pixel[channel] = a * (1.0 - blend) + b * blend;
+    }
+    pixel
+}
+
 pub fn altitude_palette(
     height: &HeightField, low: [f32; 3], high: [f32; 3],
     midpoint: f32, contrast: f32,
 ) -> ColorField {
-    let midpoint = midpoint.clamp(0.01, 0.99);
-    let contrast = contrast.clamp(0.1, 6.0);
     let mut output = ColorField::flat(height.size, [0.0, 0.0, 0.0, 1.0]);
     for (&h, pixel) in height.values.iter().zip(&mut output.pixels) {
-        let t = if h <= midpoint {
-            0.5 * (h.max(0.0) / midpoint)
-        } else {
-            0.5 + 0.5 * ((h - midpoint) / (1.0 - midpoint))
-        };
-        let shaped = ((t - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
-        let blend = shaped * shaped * (3.0 - 2.0 * shaped);
-        for channel in 0..3 {
-            let a = low[channel].clamp(0.0, 1.0);
-            let b = high[channel].clamp(0.0, 1.0);
-            pixel[channel] = a * (1.0 - blend) + b * blend;
-        }
+        *pixel = palette_pixel(h, low, high, midpoint, contrast);
+    }
+    output
+}
+
+/// Exactly the same RGBA blending semantics for full grids and regions.
+pub(crate) fn mix_pixel(
+    a: [f32; 4], b: [f32; 4], mask: f32, mix: f32,
+) -> [f32; 4] {
+    let t = (mix * mask).clamp(0.0, 1.0);
+    let mut output = a;
+    for (channel, value) in output.iter_mut().enumerate() {
+        *value = a[channel] * (1.0 - t) + b[channel] * t;
     }
     output
 }
@@ -54,10 +76,7 @@ pub fn color_blend(a: &ColorField, b: &ColorField, mask: &HeightField, mix: f32)
     assert_eq!(a.size, mask.size, "mask must match color resolution");
     let mut output = a.clone();
     for (i, pixel) in output.pixels.iter_mut().enumerate() {
-        let t = (mix * mask.values[i]).clamp(0.0, 1.0);
-        for (channel, value) in pixel.iter_mut().enumerate() {
-            *value = a.pixels[i][channel] * (1.0 - t) + b.pixels[i][channel] * t;
-        }
+        *pixel = mix_pixel(a.pixels[i], b.pixels[i], mask.values[i], mix);
     }
     output
 }

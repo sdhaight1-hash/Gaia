@@ -3,7 +3,8 @@
 use gaia::pipeline::{GraphCache, PortRef, PortType};
 use gaia::color::{export_rgb8, export_splat_rgba8};
 use gaia::tiles::{tile_layout, tile_height, tile_color};
-use gaia::region::{evaluate_region, validate_region_graph, RegionLayout, MAX_REGION_RESOLUTION};
+use gaia::region::{evaluate_region, evaluate_color_region, validate_region_graph,
+    RegionLayout, MAX_REGION_RESOLUTION};
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
 use std::{env, path::{Path, PathBuf}, process, time::Instant};
@@ -31,12 +32,13 @@ This subdivides an already-built field; it does not reduce graph build memory.
 --all-outputs NODE exports every named output of a node using one shared
 evaluation cache and writes STEM.batch.report.json. Do not combine with --port.
 Regular resolution must be 32–2048; --tiles COUNT 2–8 splits a FULL graph.
---region-tiles COUNT 2–64 instead evaluates Height/Mask regions directly,
+--region-tiles COUNT 2–64 evaluates Height/Mask and RGB Color regions directly,
 up to 8192 resolution, with exact shared border samples and bounded working
 memory. This mode requires --no-obj, and does not output a stitched PNG/mesh.
 Supports local Mountain, Noise, Adjust (autolevel OFF), Blur, Blend, Masked
-Blend, Slope, Curvature, Elevation Mask and Mask Levels ancestors.
-Erosion, hydrology, autolevel and other global nodes are rejected
+Blend, Slope, Curvature, Aspect, Elevation Mask, Mask Levels, Colorize and
+Color Mixer ancestors. Erosion, hydrology, autolevel and other global nodes
+are rejected
 explicitly (never silently fall back to full-grid evaluation). Desktop
 previews remain at up to 512.
 "#;
@@ -296,21 +298,24 @@ fn build_all_outputs(
     Ok(())
 }
 
-/// Independent, world-coordinate typed scalar regions. Each tile finishes and is
-/// dropped before the next one is requested; no full-resolution heightfield
-/// and no full-grid evaluation cache are constructed.
+/// Independent world-coordinate Height/Mask/Color regions; each tile is
+/// exported and released before the next one, without full-grid evaluation.
 fn build_region_tiles(project: &Project, options: &Options,
     source: &PortRef, started: Instant,
 ) -> Result<(), String> {
     let count = options.region_tiles.ok_or("Missing region tile count")?;
     let layout = RegionLayout::new(project.resolution, count)?;
-    // Preflight prior to creating directories/files: never silently allocate
-    // a complete full-field fallback for a globally coupled operator.
+    // Preflight the entire connected dependency path before creating output
+    // files. Unsupported global operators never trigger a full-grid fallback.
     validate_region_graph(&project.graph, source)?;
     let kind = project.graph.get(source.node)
         .and_then(|node| node.kind.output_ports().iter()
             .find(|(port, _)| *port == source.port).map(|(_, kind)| *kind))
         .ok_or("Cannot resolve region output type")?;
+    if !matches!(kind, PortType::Height | PortType::Mask | PortType::Color) {
+        return Err("Only scalar Height/Mask and RGB Color regions are available".into());
+    }
+    let format = if kind == PortType::Color { "RGB8" } else { "Grayscale16" };
     let directory = options.output.with_extension("region.tiles");
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let mut tiles = Vec::with_capacity(count * count);
@@ -323,16 +328,29 @@ fn build_region_tiles(project: &Project, options: &Options,
     for ty in 0..count {
         for tx in 0..count {
             let rect = layout.tile(tx, ty)?;
-            let (tile, stats) = evaluate_region(
-                &project.graph, project.resolution, source, rect)?;
-            debug_assert_eq!(tile.kind, kind);
+            let (scalar, rgb, stats) = if kind == PortType::Color {
+                let (field, stats) = evaluate_color_region(
+                    &project.graph, project.resolution, source, rect)?;
+                (None, Some(field), stats)
+            } else {
+                let (field, stats) = evaluate_region(
+                    &project.graph, project.resolution, source, rect)?;
+                debug_assert_eq!(field.kind, kind);
+                (Some(field), None, stats)
+            };
             peak_samples = peak_samples.max(stats.peak_working_samples);
             computed_regions += stats.computed_regions;
-            // Neighbor tiles repeat exactly one border sample. Count it
-            // only once when reporting world-wide min/max/mean.
+            // Adjacent tiles repeat exactly one border sample. Count it once
+            // in the global summary. Color uses the full-grid Rec709 RGB proxy.
             for y in (if ty == 0 { 0 } else { 1 })..rect.height {
                 for x in (if tx == 0 { 0 } else { 1 })..rect.width {
-                    let value = tile.values[y * rect.width + x];
+                    let i = y * rect.width + x;
+                    let value = if let Some(color) = &rgb {
+                        let pixel = color.pixels[i];
+                        pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722
+                    } else {
+                        scalar.as_ref().expect("scalar region missing").values[i]
+                    };
                     raw_min = raw_min.min(value);
                     raw_max = raw_max.max(value);
                     raw_sum += f64::from(value);
@@ -340,7 +358,12 @@ fn build_region_tiles(project: &Project, options: &Options,
                 }
             }
             let filename = format!("x{tx:02}_y{ty:02}.png");
-            tile.export_png16(&directory.join(&filename))?;
+            let filepath = directory.join(&filename);
+            if let Some(color) = rgb {
+                color.export_rgb8(&filepath)?;
+            } else {
+                scalar.expect("scalar region missing").export_png16(&filepath)?;
+            }
             tiles.push(json!({
                 "file": filename,
                 "x": rect.x, "y": rect.y,
@@ -359,7 +382,7 @@ fn build_region_tiles(project: &Project, options: &Options,
         "origin": "top-left, integer world samples",
         "node": source.node, "port": source.port,
         "type": kind.label(),
-        "format": "Grayscale16",
+        "format": format,
         "folder": directory.display().to_string(),
         "tiles": tiles,
     });
@@ -370,7 +393,10 @@ fn build_region_tiles(project: &Project, options: &Options,
     std::fs::write(&report, serde_json::to_vec_pretty(&json!({
         "resolution": project.resolution,
         "node": source.node, "port": source.port,
-        "type": kind.label(), "format": "Grayscale16",
+        "type": kind.label(), "format": format,
+        "statistics_channel": if kind == PortType::Color {
+            "Rec709 luminance proxy"
+        } else { "raw scalar" },
         "min_raw": raw_min, "max_raw": raw_max,
         "mean_raw": raw_sum / unique_samples as f64,
         "unique_samples": unique_samples,
@@ -661,6 +687,92 @@ mod tests {
                 let at = 2 * (y * aw + x);
                 assert_eq!(u16::from_be_bytes([a[at], a[at + 1]]), encoded);
             }
+        }
+    }
+
+    #[test]
+    fn region_cli_exports_rgb_color_tiles_without_global_evaluation() {
+        use gaia::terrain::NodeKind;
+        let temp = tempfile::tempdir().unwrap();
+        let scene = temp.path().join("color.gaia.json");
+        let stem = temp.path().join("color-output");
+        let mut project = Project::default();
+        project.resolution = 65;
+        let height = project.graph.add(NodeKind::Noise {
+            seed: 42, frequency: 5.0, amplitude: 0.8,
+        });
+        let mask = project.graph.add(NodeKind::Aspect {
+            azimuth: 55.0, half_width: 80.0, min_slope: 0.1,
+        });
+        project.graph.connect(mask, 0, PortRef::height(height)).unwrap();
+        let a = project.graph.add(NodeKind::Colorize {
+            low: [0.1,0.2,0.9], high: [0.8,0.6,0.2],
+            midpoint: 0.4, contrast: 1.5,
+        });
+        let b = project.graph.add(NodeKind::Colorize {
+            low: [0.7,0.1,0.2], high: [0.3,0.9,0.5],
+            midpoint: 0.6, contrast: 0.8,
+        });
+        project.graph.connect(a, 0, PortRef::height(height)).unwrap();
+        project.graph.connect(b, 0, PortRef::height(height)).unwrap();
+        let mixed = project.graph.add(NodeKind::ColorMixer { mix: 0.7 });
+        project.graph.connect(mixed, 0, PortRef::new(a, "color")).unwrap();
+        project.graph.connect(mixed, 1, PortRef::new(b, "color")).unwrap();
+        project.graph.connect(mixed, 2, PortRef::new(mask, "aspect")).unwrap();
+        project.save(&scene).unwrap();
+        build(parse_args(vec![
+            "--project".into(), scene.to_string_lossy().into_owned(),
+            "--output".into(), stem.to_string_lossy().into_owned(),
+            "--port".into(), format!("{mixed}:color"),
+            "--no-obj".into(), "--region-tiles".into(), "3".into(),
+        ]).unwrap().unwrap()).unwrap();
+        assert!(!stem.with_extension("png").exists());
+        assert!(!stem.with_extension("obj").exists());
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("region.tiles.json")).unwrap()).unwrap();
+        assert_eq!(manifest["format"], "RGB8");
+        assert_eq!(manifest["type"], "Color");
+        assert_eq!(manifest["tile_count"], 9);
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("region.report.json")).unwrap()).unwrap();
+        assert_eq!(report["type"], "Color");
+        assert_eq!(report["unique_samples"], 65 * 65);
+        assert_eq!(report["statistics_channel"], "Rec709 luminance proxy");
+        let expected = project.graph.evaluate_port(65,
+            &PortRef::new(mixed, "color")).unwrap().color.unwrap();
+        let layout = RegionLayout::new(65, 3).unwrap();
+        let mut edges = Vec::new();
+        for ty in 0..3 {
+            for tx in 0..3 {
+                let rect = layout.tile(tx, ty).unwrap();
+                let path = stem.with_extension("region.tiles")
+                    .join(format!("x{tx:02}_y{ty:02}.png"));
+                let mut reader = png::Decoder::new(std::io::BufReader::new(
+                    std::fs::File::open(path).unwrap())).read_info().unwrap();
+                let mut bytes = vec![0; reader.output_buffer_size()];
+                let info = reader.next_frame(&mut bytes).unwrap();
+                assert_eq!(info.color_type, png::ColorType::Rgb);
+                assert_eq!(info.bit_depth, png::BitDepth::Eight);
+                assert_eq!(info.width as usize, rect.width);
+                assert_eq!(info.height as usize, rect.height);
+                for y in 0..rect.height {
+                    for x in 0..rect.width {
+                        let expected_pixel = expected.pixels[
+                            (rect.y + y)*65 + rect.x + x];
+                        for c in 0..3 {
+                            assert_eq!(bytes[(y*rect.width+x)*3+c],
+                                (expected_pixel[c].clamp(0.0,1.0)*255.0).round() as u8);
+                        }
+                    }
+                }
+                edges.push((rect, bytes));
+            }
+        }
+        let (left, a) = &edges[0];
+        let (right, b) = &edges[1];
+        for row in 0..left.height {
+            assert_eq!(&a[(row*left.width+left.width-1)*3..(row*left.width+left.width)*3],
+                &b[(row*right.width)*3..(row*right.width+1)*3]);
         }
     }
 
