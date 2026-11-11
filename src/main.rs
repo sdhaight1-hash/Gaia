@@ -466,6 +466,9 @@ impl GaiaApp {
             NodeKind::Lake {
                 fill_fraction: 1.0, minimum_area: 4, minimum_depth: 0.01,
             });
+        self.palette_node(ui, "≈  Sea",
+            "Sea-level inundation, coastlines, beach mask and surface conditioning",
+            NodeKind::Sea { level: 0.27, shore_width: 6, erosion: 0.3 });
         self.palette_node(ui, "*  Snow",
             "Accumulate altitude-dependent snow, melt and downhill settling",
             NodeKind::Snow {
@@ -849,6 +852,16 @@ impl GaiaApp {
                         .text("Min potential depth")).changed();
                     ui.small("Closed-basin static water levels; no water flow, rainfall, or evolving sediment.");
                     ui.small("Outputs: original terrain Height, surface Height, lake depth Water, coverage Mask.");
+                }
+                NodeKind::Sea { level, shore_width, erosion } => {
+                    changed |= ui.add(egui::Slider::new(level, -2.0..=4.0)
+                        .text("Sea level")).changed();
+                    changed |= ui.add(egui::Slider::new(shore_width, 1..=32)
+                        .text("Shore reach (pixels)")).changed();
+                    changed |= ui.add(egui::Slider::new(erosion, 0.0..=1.0)
+                        .text("Coastal smoothing")).changed();
+                    ui.small("Shore is detected at actual dry/wet transitions. No simulated waves, tides or sediment mass.");
+                    ui.small("Outputs: height, flat surface, water depth, wet, shore and beach masks.");
                 }
                 NodeKind::Snow { seed, snowline, intensity, melt, adherence, settle } => {
                     changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
@@ -1390,7 +1403,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Plates { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Sea { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
