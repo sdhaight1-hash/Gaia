@@ -255,7 +255,7 @@ impl GaiaApp {
     }
 
     fn add_node(&mut self, kind: NodeKind) {
-        let is_mask = matches!(kind, NodeKind::Slope | NodeKind::Curvature | NodeKind::ElevationMask { .. });
+        let is_mask = matches!(kind, NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. });
         self.selected = self.project.graph.add(kind);
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
@@ -315,6 +315,8 @@ impl GaiaApp {
             NodeKind::Slope);
         self.palette_node(ui, "◌  Curvature", "Local ridges and concave bowls",
             NodeKind::Curvature);
+        self.palette_node(ui, "◐  Aspect Mask", "Select slopes facing a compass direction",
+            NodeKind::Aspect { azimuth: 0.0, half_width: 65.0, min_slope: 0.02 });
         self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
             NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
         self.palette_node(ui, "↝  Warp", "Distort a terrain using two noise fields",
@@ -537,6 +539,15 @@ impl GaiaApp {
                 }
                 NodeKind::Curvature => {
                     ui.label("Curvature mask: dark ridges, bright bowls, midgray flat terrain.");
+                }
+                NodeKind::Aspect { azimuth, half_width, min_slope } => {
+                    changed |= ui.add(egui::Slider::new(azimuth, 0.0..=360.0)
+                        .text("Downhill facing °")).changed();
+                    changed |= ui.add(egui::Slider::new(half_width, 1.0..=180.0)
+                        .text("Half-width °")).changed();
+                    changed |= ui.add(egui::Slider::new(min_slope, 0.0..=2.0)
+                        .text("Minimum slope")).changed();
+                    ui.small("0° North, 90° East, 180° South, 270° West. Flat terrain is black.");
                 }
                 NodeKind::ElevationMask { low, high, feather } => {
                     changed |= ui.add(egui::Slider::new(low, 0.0..=1.0).text("Min height")).changed();
@@ -1006,7 +1017,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } => ui_theme::AMBER,
-        NodeKind::Slope | NodeKind::Curvature | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
 }
 
