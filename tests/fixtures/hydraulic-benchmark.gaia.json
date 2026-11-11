@@ -1,0 +1,48 @@
+{
+  "resolution": 128,
+  "graph": {
+    "nodes": [
+      {
+        "id": 1,
+        "kind": {
+          "Mountain": {
+            "seed": 42,
+            "frequency": 4,
+            "height": 0.7
+          }
+        },
+        "inputs": [],
+        "position": [
+          35,
+          90
+        ]
+      },
+      {
+        "id": 2,
+        "kind": {
+          "Hydraulic": {
+            "params": {
+              "iterations": 2,
+              "rain": 0.004,
+              "evaporation": 0.03,
+              "capacity": 2,
+              "erosion_rate": 0.3,
+              "deposition_rate": 0.18
+            }
+          }
+        },
+        "inputs": [
+          {
+            "node": 1,
+            "port": "height"
+          }
+        ],
+        "position": [
+          265,
+          90
+        ]
+      }
+    ],
+    "output": 2
+  }
+}
