@@ -461,6 +461,12 @@ impl GaiaApp {
             NodeKind::Lake {
                 fill_fraction: 1.0, minimum_area: 4, minimum_depth: 0.01,
             });
+        self.palette_node(ui, "*  Snow",
+            "Accumulate altitude-dependent snow, melt and downhill settling",
+            NodeKind::Snow {
+                seed: 24, snowline: 0.32, intensity: 0.12,
+                melt: 0.12, adherence: 0.55, settle: 6,
+            });
         self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
             NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
         self.palette_node(ui, "◩  Mask Levels", "Remap mask black/white points, gamma and invert",
@@ -825,6 +831,21 @@ impl GaiaApp {
                         .text("Min potential depth")).changed();
                     ui.small("Closed-basin static water levels; no water flow, rainfall, or evolving sediment.");
                     ui.small("Outputs: original terrain Height, surface Height, lake depth Water, coverage Mask.");
+                }
+                NodeKind::Snow { seed, snowline, intensity, melt, adherence, settle } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(snowline, -2.0..=4.0)
+                        .text("Snow line")).changed();
+                    changed |= ui.add(egui::Slider::new(intensity, 0.0..=0.5)
+                        .text("Snowfall")).changed();
+                    changed |= ui.add(egui::Slider::new(melt, 0.0..=1.0)
+                        .text("Melt")).changed();
+                    changed |= ui.add(egui::Slider::new(adherence, 0.0..=1.0)
+                        .text("Slope adhesion")).changed();
+                    changed |= ui.add(egui::Slider::new(settle, 0..=24)
+                        .text("Settling steps")).changed();
+                    ui.small("Snow mass is preserved during downhill transfer; melt explicitly removes mass.");
+                    ui.small("Outputs: snow-covered Height, raw snow_depth Height, coverage Mask.");
                 }
                 NodeKind::MaskLevels { black, white, gamma, invert } => {
                     changed |= ui.add(egui::Slider::new(black, 0.0..=1.0)
@@ -1351,7 +1372,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
