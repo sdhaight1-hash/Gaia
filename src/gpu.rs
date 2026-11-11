@@ -2,6 +2,7 @@
 //! Camera movement is uniform-only: do not rebuild or sort the mesh on orbit.
 use gaia::terrain::HeightField;
 use gaia::color::ColorField;
+use crate::material_texture::{SIZE as ATLAS_SIZE, LAYERS as ATLAS_LAYERS, build_atlas};
 use bytemuck::{Pod, Zeroable};
 use eframe::{
     egui,
@@ -44,6 +45,9 @@ struct Offscreen {
 struct TerrainRenderResources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    // Keep the array texture alive while bind groups reference its view.
+    _material_atlas: wgpu::Texture,
+    material_bind: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -187,9 +191,30 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye:
             count: None,
         }],
     });
+    let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Gaia 4-layer detail atlas layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Gaia terrain pipeline layout"),
-        bind_group_layouts: &[Some(&group_layout)],
+        bind_group_layouts: &[Some(&group_layout), Some(&material_layout)],
         immediate_size: 0,
     });
     const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
@@ -244,6 +269,61 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye:
             binding: 0,
             resource: uniform.as_entire_binding(),
         }],
+    });
+    // Single 64x64x4 neutral texture array, uploaded once on editor startup.
+    // No repeated upload, file I/O or procedural generation during orbit.
+    let atlas_size = wgpu::Extent3d {
+        width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: ATLAS_LAYERS,
+    };
+    let atlas = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Gaia material detail array"),
+        size: atlas_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    render_state.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &atlas, mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &build_atlas(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(ATLAS_SIZE * 4),
+            rows_per_image: Some(ATLAS_SIZE),
+        },
+        atlas_size,
+    );
+    let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Gaia repeat-triplanar material sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let material_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Gaia four material detail layers"),
+        layout: &material_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&material_sampler),
+            },
+        ],
     });
     let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Gaia texture composite shader"),
@@ -306,6 +386,7 @@ pub fn install(render_state: &egui_wgpu::RenderState, field: &HeightField, _eye:
         upload_buffers(device, field, None, None);
     render_state.renderer.write().callback_resources.insert(TerrainRenderResources {
         pipeline, bind_group, uniform, vertices, indices, index_count,
+        _material_atlas: atlas, material_bind,
         composite_pipeline, composite_layout, composite_sampler,
         format: render_state.target_format,
         offscreen: None,
@@ -425,6 +506,7 @@ impl egui_wgpu::CallbackTrait for TerrainCallback {
                 });
                 pass.set_pipeline(&state.pipeline);
                 pass.set_bind_group(0, &state.bind_group, &[]);
+                pass.set_bind_group(1, &state.material_bind, &[]);
                 pass.set_vertex_buffer(0, state.vertices.slice(..));
                 pass.set_index_buffer(state.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..state.index_count, 0, 0..1);

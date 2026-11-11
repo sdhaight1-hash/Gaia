@@ -118,7 +118,10 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   view-dependent highlights. Four color pickers and roughness sliders per
   Material Masks node let authors control the GPU material look, preserved
   in project JSON with legacy defaults. Existing RGB Color nodes retain
-  painted colors. This remains untextured PBR without normal maps or IBL.
+  painted colors. A deterministic, tileable four-layer 64² detail texture array
+  is sampled with triplanar projection in the fragment shader, avoiding blank
+  steep cliffs. It currently supplies neutral albedo/roughness variation;
+  authored PBR texture assets, normal maps and IBL remain unimplemented.
 - Surface Material Masks node gives four mutually normalized coverage fields
   (sand, soil, rock, snow) from elevation and slope. Outputs can drive typed
   Color Mixers or independent PNG16 material-layer exports. The same node

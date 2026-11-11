@@ -1,11 +1,14 @@
 // Dielectric GGX terrain preview with four splat-weighted material layers.
-// This is a material shading baseline: no texture sampling or IBL yet.
+// Tileable 2D-array detail textures use triplanar projection, including cliffs.
+// No authored PBR image assets, height/displacement maps, or IBL yet.
 struct Camera {
     matrix: mat4x4<f32>,
     eye: vec4<f32>,
     materials: array<vec4<f32>, 4>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
+@group(1) @binding(0) var material_atlas: texture_2d_array<f32>;
+@group(1) @binding(1) var material_sampler: sampler;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
@@ -36,6 +39,16 @@ fn fresnel_schlick(cos_theta: f32) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - cos_theta, 5.0);
 }
 
+// Explicit LOD allows per-fragment material selection without implicit
+// derivative-uniformity requirements; atlas has one level and 64x64 tiles.
+fn triplanar_detail(layer: i32, p: vec3<f32>, axis: vec3<f32>) -> vec4<f32> {
+    let uv = p * 7.5;
+    let x = textureSampleLevel(material_atlas, material_sampler, uv.zy, layer, 0.0);
+    let y = textureSampleLevel(material_atlas, material_sampler, uv.xz, layer, 0.0);
+    let z = textureSampleLevel(material_atlas, material_sampler, uv.xy, layer, 0.0);
+    return x * axis.x + y * axis.y + z * axis.z;
+}
+
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let weights = max(input.splat, vec4<f32>(0.0));
@@ -52,6 +65,17 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         roughness = dot(w, vec4<f32>(
             camera.materials[0].w, camera.materials[1].w,
             camera.materials[2].w, camera.materials[3].w));
+        // Material detail is projected in terrain world-space, not attached
+        // to horizontal UVs, so steep cliffs retain texture density.
+        let n0 = normalize(input.normal);
+        let axis = pow(abs(n0), vec3<f32>(4.0));
+        let axis_weights = axis / max(dot(axis, vec3<f32>(1.0)), 0.0001);
+        let detail = triplanar_detail(0, input.world_position, axis_weights) * w.x
+            + triplanar_detail(1, input.world_position, axis_weights) * w.y
+            + triplanar_detail(2, input.world_position, axis_weights) * w.z
+            + triplanar_detail(3, input.world_position, axis_weights) * w.w;
+        albedo *= vec3<f32>(0.70) + detail.rgb * 0.55;
+        roughness = clamp(roughness * (0.85 + 0.3 * detail.a), 0.05, 1.0);
     }
     let n = normalize(input.normal);
     let v = normalize(camera.eye.xyz - input.world_position);
