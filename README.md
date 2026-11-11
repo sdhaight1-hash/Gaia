@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/multi-output-batch-build` (stacked on preceding PRs).
+Development branch: `feat/lake-basins` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Island, Volcano, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
-  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Elevation Mask, Mask Levels, Warp,
+  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
@@ -99,6 +99,11 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   prevent new terminal pits. Outputs carved Height, channels Mask and normalized
   wear Mask. This first version does not model rain discharge, water surface,
   sediment mass conservation or art-directable headwater masks.
+- Lake: static outlet-bounded basin filling with flat water surfaces, selectable
+  fill fraction, minimum basin area and potential depth thresholds. Exports
+  original terrain Height, inundated surface Height, depth Water and coverage Mask.
+  It is not rainfall/evaporation driven or time-evolving, and volume units require
+  a real-world cell area that Gaia does not yet know.
 - Experimental hydraulic erosion: rain, water advection, sediment
   transport, erosion/deposition, evaporation, boundary outflow ledgers.
   Water/solids are tested for mass consistency.
