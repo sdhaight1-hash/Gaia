@@ -8,3 +8,4 @@ pub mod import;
 pub mod color;
 pub mod drainage;
 pub mod tiles;
+pub mod adjust;
