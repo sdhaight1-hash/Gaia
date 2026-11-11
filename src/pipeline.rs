@@ -3,6 +3,7 @@
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
 use crate::adjust::adjust_height;
+use crate::normals::derive_normals;
 use crate::drainage::drainage;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
@@ -297,6 +298,7 @@ impl NodeKind {
         const HEIGHT: &[(&str, PortType)] = &[("height", PortType::Height)];
         const SLOPE: &[(&str, PortType)] = &[("slope", PortType::Mask)];
         const COLOR: &[(&str, PortType)] = &[("color", PortType::Color)];
+        const NORMALS: &[(&str, PortType)] = &[("normal", PortType::Color)];
         const CURVATURE: &[(&str, PortType)] = &[("curvature", PortType::Mask)];
         const ASPECT: &[(&str, PortType)] = &[("aspect", PortType::Mask)];
         const MASK_LEVELS: &[(&str, PortType)] = &[("mask", PortType::Mask)];
@@ -323,6 +325,7 @@ impl NodeKind {
             Self::Hydraulic { .. } => HYDRAULIC,
             Self::Slope => SLOPE,
             Self::Colorize { .. } | Self::ColorMixer { .. } => COLOR,
+            Self::Normals { .. } => NORMALS,
             Self::Curvature => CURVATURE,
             Self::Aspect { .. } => ASPECT,
             Self::Drainage { .. } => DRAINAGE,
@@ -342,7 +345,7 @@ impl NodeKind {
             (Self::MaskLevels { .. }, 0) => Some(PortType::Mask),
             (Self::ColorMixer { .. }, 2) => Some(PortType::Mask),
             (Self::ColorMixer { .. }, 0 | 1) => Some(PortType::Color),
-            (Self::Colorize { .. }, 0) => Some(PortType::Height),
+            (Self::Colorize { .. } | Self::Normals { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
@@ -426,6 +429,9 @@ fn evaluate_kind(
             NodeOutputs::default().with("height", PortType::Height,
                 adjust_height(take(0), *multiply, *shaper, *clamp_min,
                     *clamp_max, *autolevel, *invert)?),
+        NodeKind::Normals { strength, flip_green } =>
+            NodeOutputs::default().with_color("normal",
+                derive_normals(take(0), *strength, *flip_green)?),
         NodeKind::Blur { radius } => NodeOutputs::default()
             .with("height", PortType::Height, blur(take(0), *radius)),
         NodeKind::Blend { mix } => NodeOutputs::default()
@@ -526,6 +532,26 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn normals_from_height_are_rgba_and_roundtrip_as_color_port() {
+        let mut p = Project::default();
+        let id = p.graph.add_from(NodeKind::Normals {
+            strength: 1.3, flip_green: true,
+        }, &PortRef::height(1));
+        assert_eq!(p.graph.get(id).unwrap().inputs[0], PortRef::height(1));
+        let output = p.graph.evaluate_port(32, &PortRef::new(id, "normal")).unwrap();
+        assert_eq!(output.kind, PortType::Color);
+        assert_eq!(output.color.as_ref().unwrap().pixels.len(), 1024);
+        assert!(output.color.as_ref().unwrap().pixels.iter()
+            .all(|px| px.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))));
+        let restored: Project = serde_json::from_str(
+            &serde_json::to_string(&p).unwrap()
+        ).unwrap();
+        assert_eq!(output.color, restored.graph.evaluate_port(32,
+            &PortRef::new(id, "normal")).unwrap().color);
+        assert!(p.graph.connect(2, 0, PortRef::new(id, "normal")).is_err());
+    }
 
     #[test]
     fn adjust_connects_to_selected_mountain_and_changes_elevation() {
