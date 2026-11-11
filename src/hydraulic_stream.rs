@@ -216,8 +216,8 @@ impl DiskTransport {
             w.fill(f32::NAN);
             s.fill(f32::NAN);
             fill(y, &mut h, &mut w, &mut s)?;
-            if [h.as_slice(), w.as_slice(), s.as_slice()]
-                .iter().flatten().any(|v| !v.is_finite() || *v < 0.0)
+            if h.iter().chain(&w).chain(&s)
+                .any(|v| !v.is_finite() || *v < 0.0)
             {
                 return Err("Disk transport rows must contain finite nonnegative values".into());
             }
@@ -367,9 +367,9 @@ mod tests {
         let n = state.size();
         for y in 0..n {
             let (w, s, flow) = state.transport_row(y).unwrap();
-            assert_eq!(w, expected.water.values[y * n..(y + 1) * n]);
-            assert_eq!(s, expected.sediment.values[y * n..(y + 1) * n]);
-            assert_eq!(flow.unwrap(), expected.flow.values[y * n..(y + 1) * n]);
+            assert_eq!(w.as_slice(), &expected.water.values[y * n..(y + 1) * n]);
+            assert_eq!(s.as_slice(), &expected.sediment.values[y * n..(y + 1) * n]);
+            assert_eq!(flow.unwrap().as_slice(), &expected.flow.values[y * n..(y + 1) * n]);
         }
     }
 
