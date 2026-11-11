@@ -23,16 +23,16 @@ struct FieldRow {
 /// Data is little-endian f32 in row-major world coordinates, never duplicate
 /// halo ownership. Files are automatically removed when this state is dropped.
 pub struct DiskTransport {
-    size: usize,
-    height: File,
-    water: File,
-    sediment: File,
-    last_flow: Option<File>,
-    wear: Option<File>,
-    deposits: Option<File>,
+    pub(crate) size: usize,
+    pub(crate) height: File,
+    pub(crate) water: File,
+    pub(crate) sediment: File,
+    pub(crate) last_flow: Option<File>,
+    pub(crate) wear: Option<File>,
+    pub(crate) deposits: Option<File>,
 }
 
-fn scratch_file() -> Result<File, String> {
+pub(crate) fn scratch_file() -> Result<File, String> {
     tempfile::tempfile().map_err(|err| err.to_string())
 }
 
@@ -56,7 +56,7 @@ fn read_row(file: &mut File, size: usize, y: usize) -> Result<Vec<f32>, String> 
 
 /// Signed contribution to one cell from a face. Faces are oriented from the
 /// lower world index to the higher. Opposite flows cannot both be positive.
-fn face_delta(
+pub(crate) fn face_delta(
     forward: (f32, f32), reverse: (f32, f32), target_is_lower: bool,
 ) -> Result<(f32, f32), String> {
     if forward.0 > 0.0 && reverse.0 > 0.0 {
