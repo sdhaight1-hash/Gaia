@@ -406,6 +406,11 @@ impl GaiaApp {
                 seed: 59, radius: 0.36, height: 0.95, mouth: 0.28,
                 bulk: 0.55, roughness: 0.45, center_x: 0.5, center_y: 0.5,
             });
+        self.palette_node(ui, "◈  Plates",
+            "Seeded moving plate regions, uplift, rifts and geological masks",
+            NodeKind::Plates {
+                seed: 73, count: 12, continental: 0.55, uplift: 0.9, warp: 0.55,
+            });
         self.palette_node(ui, "◈  Noise", "Layer smooth fractal noise",
             NodeKind::Noise { seed: 7, frequency: 6.0, amplitude: 0.4 });
         self.palette_node(ui, "⇧  Import Heightmap", "Read an 8- or 16-bit grayscale PNG",
@@ -667,6 +672,19 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(center_x, 0.2..=0.8).text("Center X")).changed();
                     changed |= ui.add(egui::Slider::new(center_y, 0.2..=0.8).text("Center Y")).changed();
                     ui.small("Standalone volcanic cone and caldera; erosion can be applied downstream.");
+                }
+                NodeKind::Plates { seed, count, continental, uplift, warp } => {
+                    changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
+                    changed |= ui.add(egui::Slider::new(count, 2..=64)
+                        .text("Plate count")).changed();
+                    changed |= ui.add(egui::Slider::new(continental, 0.0..=1.0)
+                        .text("Continental share")).changed();
+                    changed |= ui.add(egui::Slider::new(uplift, 0.0..=2.0)
+                        .text("Collision uplift")).changed();
+                    changed |= ui.add(egui::Slider::new(warp, 0.0..=1.0)
+                        .text("Boundary warp")).changed();
+                    ui.small("Static kinematic regions with seeded motion; not geological time evolution.");
+                    ui.small("Outputs: Height; boundary, convergence, divergence, plate ID and continental masks.");
                 }
                 NodeKind::Noise { seed, frequency, amplitude } => {
                     changed |= ui.add(egui::Slider::new(seed, 0..=100_000).text("Seed")).changed();
@@ -1369,7 +1387,7 @@ impl eframe::App for GaiaApp {
 
 fn node_accent(kind: &NodeKind) -> egui::Color32 {
     match kind {
-        NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
+        NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Plates { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
