@@ -810,7 +810,7 @@ mod tests {
                 .output_ports().iter()
                 .find(|(name, _)| *name == reference.port).unwrap().1
         ).collect();
-        assert_eq!(sources, [
+        assert_eq!(sources.as_slice(), &[
             crate::pipeline::PortType::Color,
             crate::pipeline::PortType::Color,
             crate::pipeline::PortType::Mask,
