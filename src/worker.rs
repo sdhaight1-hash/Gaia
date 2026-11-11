@@ -119,21 +119,36 @@ fn build(
     cache: &mut GraphCache, request: &Request, generation: &AtomicU64,
 ) -> Result<BuildData, String> {
     let size = request.project.resolution;
-    let height = cache.evaluate_cancellable(
-        &request.project.graph, size,
-        &PortRef::height(request.project.graph.output),
-        generation, request.generation,
-    )?;
-    let computed = cache.stats.computed;
-    let reused = cache.stats.reused;
-    let preview = cache.evaluate_cancellable(
-        &request.project.graph, size, &request.preview,
-        generation, request.generation,
-    )?;
-    let computed = computed + cache.stats.computed;
-    let reused = reused + cache.stats.reused;
+    // For selected Height ports, the selected field is the actual 3D mesh.
+    // Do not also evaluate the unrelated global output (often an expensive
+    // erosion chain) merely to show a Mountain or Lake:surface preview.
+    let selected_is_height = request.project.graph.get(request.preview.node)
+        .is_some_and(|node| node.kind.output_ports().iter().any(|(name, ty)|
+            *name == request.preview.port && *ty == PortType::Height));
+    let (render_height, preview, computed, reused) = if selected_is_height {
+        let preview = cache.evaluate_cancellable(
+            &request.project.graph, size, &request.preview,
+            generation, request.generation,
+        )?;
+        (preview.data.clone(), preview, cache.stats.computed, cache.stats.reused)
+    } else {
+        // Mask, Water and Color ports shade or inspect the global height mesh.
+        let height = cache.evaluate_cancellable(
+            &request.project.graph, size,
+            &PortRef::height(request.project.graph.output),
+            generation, request.generation,
+        )?;
+        let computed = cache.stats.computed;
+        let reused = cache.stats.reused;
+        let preview = cache.evaluate_cancellable(
+            &request.project.graph, size, &request.preview,
+            generation, request.generation,
+        )?;
+        (height.data.clone(), preview,
+            computed + cache.stats.computed, reused + cache.stats.reused)
+    };
     Ok(BuildData {
-        height: (*height.data).clone(),
+        height: (*render_height).clone(),
         preview: (*preview.data).clone(),
         preview_color: preview.color.as_ref().map(|rgba| (**rgba).clone()),
         preview_kind: preview.kind,
@@ -163,6 +178,49 @@ mod tests {
         assert_eq!(result.height.size, 128);
         assert_eq!(result.preview_kind, PortType::Mask);
         assert!(result.preview.mass() > 0.0);
+    }
+
+    #[test]
+    fn selecting_earlier_height_changes_3d_geometry_without_building_final_erosion() {
+        let mut project = Project::default();
+        project.resolution = 32;
+        let source = project.graph.evaluate_port(32, &PortRef::height(1)).unwrap();
+        let latest = project.graph.evaluate(32).unwrap();
+        assert_ne!(*source.data, latest);
+        let mut cache = GraphCache::default();
+        let generation = AtomicU64::new(1);
+        let output = build(&mut cache, &Request {
+            project, generation: 1, preview: PortRef::height(1)
+        }, &generation).unwrap();
+        assert_eq!(output.height, *source.data);
+        assert_eq!(output.preview_kind, PortType::Height);
+        assert_eq!(output.computed, 1,
+            "only the selected upstream height node should be built");
+    }
+
+    #[test]
+    fn selected_lake_surface_becomes_preview_mesh_and_mask_keeps_terrain_mesh() {
+        use crate::terrain::NodeKind;
+        let mut project = Project::default();
+        project.resolution = 32;
+        let lake = project.graph.add_from(NodeKind::Lake {
+            fill_fraction: 0.8, minimum_area: 1, minimum_depth: 0.0,
+        }, &PortRef::height(1));
+        let surface_port = PortRef::new(lake, "surface");
+        let surface = project.graph.evaluate_port(32, &surface_port).unwrap();
+        let generation = AtomicU64::new(1);
+        let mut cache = GraphCache::default();
+        let selected = build(&mut cache, &Request {
+            project: project.clone(), generation: 1, preview: surface_port
+        }, &generation).unwrap();
+        assert_eq!(selected.height, *surface.data);
+        assert_eq!(selected.preview_kind, PortType::Height);
+        let masked = build(&mut cache, &Request {
+            project: project.clone(), generation: 1,
+            preview: PortRef::new(lake, "coverage")
+        }, &generation).unwrap();
+        assert_eq!(masked.preview_kind, PortType::Mask);
+        assert_eq!(masked.height, project.graph.evaluate(32).unwrap());
     }
 
     #[test]
