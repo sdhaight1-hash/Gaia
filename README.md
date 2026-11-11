@@ -17,7 +17,8 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/derived-terrain-lighting` (stacked on preceding PRs).
+Active development uses stacked pull requests. Get the newest preview from
+the latest open development PR; the older `main` branch is not current.
 
 To compile from source:
 
@@ -29,7 +30,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 ## Current workflow
 
-- Left **Node Library**: Mountain, Island, Volcano, Plates, Noise, Mountain Range, Crater, Dunes,
+- Left **Node Library**: search by node name or description; add Mountain,
+  Island, Volcano, Plates, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
   Curvature, AO, Sunlight, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Sea, Snow, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.

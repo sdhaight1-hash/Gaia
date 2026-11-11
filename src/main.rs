@@ -77,6 +77,14 @@ fn add_contrasting_colorize(project: &mut Project, mixer_id: u64) -> Result<u64,
     Ok(id)
 }
 
+/// Search user-facing operator labels and descriptions, not decorative icons.
+fn palette_matches(name: &str, description: &str, search: &str) -> bool {
+    let query = search.trim().to_lowercase();
+    query.is_empty()
+        || name.to_lowercase().contains(&query)
+        || description.to_lowercase().contains(&query)
+}
+
 struct GaiaApp {
     project: Project,
     field: HeightField,
@@ -88,6 +96,7 @@ struct GaiaApp {
     selected: u64,
     wire_start: Option<PortRef>,
     filename: String,
+    node_search: String,
     status: String,
     yaw: f32,
     pitch: f32,
@@ -136,6 +145,7 @@ impl GaiaApp {
             texture,
             preview_source,
             filename: "terrain.gaia.json".to_string(),
+            node_search: String::new(),
             status: "Ready. Drag on the 3D preview to orbit; scroll to zoom.".to_string(),
             yaw,
             pitch,
@@ -496,6 +506,9 @@ impl GaiaApp {
         // Windows egui's default font lacks several decorative Unicode glyphs:
         // the video showed a row of missing-glyph squares. Labels need no icons.
         let name = name.split_once("  ").map_or(name, |(_, label)| label);
+        if !palette_matches(name, detail, &self.node_search) {
+            return;
+        }
         let button = egui::Button::new(
             egui::RichText::new(name).size(13.0).color(ui_theme::TEXT)
         ).fill(ui_theme::PANEL_RAISED);
@@ -512,7 +525,18 @@ impl GaiaApp {
         ui.label(egui::RichText::new(
             "Select a graph output first. New compatible nodes connect to it automatically."
         ).size(12.0).color(ui_theme::MUTED));
-        ui.add_space(20.0);
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.node_search)
+                .desired_width((ui.available_width() - 30.0).max(60.0))
+                .hint_text("Search nodes or functions…"));
+            if ui.add_enabled(!self.node_search.is_empty(), egui::Button::new("×"))
+                .on_hover_text("Clear node search").clicked()
+            {
+                self.node_search.clear();
+            }
+        });
+        ui.add_space(14.0);
         ui_theme::section(ui, "GENERATORS");
         self.palette_node(ui, "▲  Mountain", "Create a ridged mountain mass",
             NodeKind::Mountain { seed: 42, frequency: 4.0, height: 1.0 });
@@ -1708,6 +1732,15 @@ mod file_drop_tests {
         let temp = std::env::temp_dir();
         let path = temp.join("terrain.gaia.json");
         assert_eq!(project_dialog_directory(&path), Some(temp.as_path()));
+    }
+
+    #[test]
+    fn node_search_matches_name_and_tooltip_case_insensitively() {
+        assert!(palette_matches("Hydraulic", "Rain and sediment transport", ""));
+        assert!(palette_matches("Hydraulic", "Rain and sediment transport", " HYdRA "));
+        assert!(palette_matches("Hydraulic", "Rain and sediment transport", "sediment"));
+        assert!(!palette_matches("Hydraulic", "Rain and sediment transport", "snow"));
+        assert!(palette_matches("Material Masks", "Sand, soil, rock and snow", "rock"));
     }
 
     #[test]
