@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/obj-uv-normals` (stacked on preceding PRs).
+Development branch: `feat/depression-fill` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Island, Volcano, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
-  Curvature, Aspect Mask, Drainage, Elevation Mask, Mask Levels, Warp,
+  Curvature, Aspect Mask, Drainage, Depression Fill, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
@@ -85,8 +85,13 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Island generator with seed-controlled shoreline roughness, interior relief,
   smooth coast gradient and ocean-level outer boundary.
 - Deterministic D8 downslope drainage analysis with contributing-area ledger,
-  logarithmic accumulation mask and channel cutoff. Flats/local minima are
-  terminal outlets; no depression filling or lake simulation is implied.
+  logarithmic accumulation mask and channel cutoff. Unconditioned flats/local
+  minima remain terminal outlets.
+- Priority-flood Depression Fill makes a Height field outlet-connected by raising
+  enclosed pits to a spill level. An optional small positive grade guarantees
+  strictly downhill D8 neighbors across flats. Outputs: conditioned Height and
+  fill_depth (Water-type scalar, in raw height units). All map edges act as
+  outlets; no physically simulated lakes, rainfall or sediment balance is implied.
 - Experimental hydraulic erosion: rain, water advection, sediment
   transport, erosion/deposition, evaporation, boundary outflow ledgers.
   Water/solids are tested for mass consistency.
