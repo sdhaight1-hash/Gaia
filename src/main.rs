@@ -44,18 +44,43 @@ fn project_dialog_directory(path: &Path) -> Option<&Path> {
         !parent.as_os_str().is_empty() && parent.is_dir())
 }
 
-/// The scroll content must encompass every node, not just the first few rows.
-/// The old fixed 360px canvas stranded nodes below row 2 outside its layout.
-fn graph_canvas_extent(nodes: &[Node], viewport_width: f32) -> egui::Vec2 {
-    let mut width = viewport_width.max(920.0);
-    let mut height = 360.0_f32;
-    for node in nodes {
-        let ports = node.inputs.len().max(node.kind.output_ports().len()).max(1);
-        let node_height = 74.0_f32.max(47.0 + ports as f32 * 17.0);
-        width = width.max(node.position[0] + 194.0 + 80.0);
-        height = height.max(node.position[1] + node_height + 80.0);
+/// Convert one port location from serialized graph units to screen pixels.
+fn graph_socket(
+    view: &GraphView, viewport: egui::Rect, node: &Node, output: bool, slot: usize,
+) -> egui::Pos2 {
+    view.to_screen(viewport, egui::pos2(
+        node.position[0] + if output { CARD_WIDTH } else { 0.0 },
+        node.position[1] + PORT_START + slot as f32 * PORT_STEP,
+    ))
+}
+
+fn graph_port_color(ty: PortType) -> egui::Color32 {
+    match ty {
+        PortType::Height => ui_theme::BLUE,
+        PortType::Mask => ui_theme::AMBER,
+        PortType::Color => ui_theme::ACCENT,
+        PortType::Splat => egui::Color32::from_rgb(192, 139, 220),
+        PortType::Water => egui::Color32::from_rgb(77, 173, 223),
+        PortType::Vector | PortType::Points | PortType::Mesh => ui_theme::MUTED,
     }
-    egui::vec2(width, height)
+}
+
+fn graph_wire_points(from: egui::Pos2, to: egui::Pos2, zoom: f32) -> Vec<egui::Pos2> {
+    let control = ((to.x - from.x).abs() * 0.43).max(40.0 * zoom);
+    let a = from;
+    let b = from + egui::vec2(control, 0.0);
+    let c = to - egui::vec2(control, 0.0);
+    let d = to;
+    (0..=20).map(|step| {
+        let t = step as f32 / 20.0;
+        let u = 1.0 - t;
+        egui::pos2(
+            a.x * u * u * u + 3.0 * b.x * u * u * t
+                + 3.0 * c.x * u * t * t + d.x * t * t * t,
+            a.y * u * u * u + 3.0 * b.y * u * u * t
+                + 3.0 * c.y * u * t * t + d.y * t * t * t,
+        )
+    }).collect()
 }
 
 /// Explicitly build a second, genuinely different Color input for a mixer.
@@ -1971,20 +1996,23 @@ mod file_drop_tests {
     }
 
     #[test]
-    fn graph_canvas_extends_to_last_node_and_dragged_positions() {
-        let mut project = Project::default();
-        for index in 0..30 {
-            project.graph.add(NodeKind::Noise {
-                seed: index, frequency: 3.0, amplitude: 0.2
-            });
-        }
-        let last = project.graph.nodes.last().unwrap();
-        let extent = graph_canvas_extent(&project.graph.nodes, 800.0);
-        assert!(extent.y >= last.position[1] + 74.0 + 80.0);
-        assert!(extent.y > 1000.0, "large graph must scroll vertically");
-        project.graph.nodes[0].position = [2500.0, 1800.0];
-        let extent = graph_canvas_extent(&project.graph.nodes, 800.0);
-        assert!(extent.x >= 2500.0 + 194.0 + 80.0);
-        assert!(extent.y >= 1800.0 + 74.0 + 80.0);
+    fn graph_socket_positions_and_curves_follow_zoom_without_mutating_nodes() {
+        let project = Project::default();
+        let node = &project.graph.nodes[0];
+        let viewport = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0), egui::vec2(700.0, 350.0));
+        let mut view = GraphView::default();
+        let before = node.position;
+        let input = graph_socket(&view, viewport, node, false, 0);
+        let output = graph_socket(&view, viewport, node, true, 0);
+        assert!((output.x - input.x - CARD_WIDTH).abs() < 1e-4);
+        let points = graph_wire_points(output, input, 1.0);
+        assert_eq!(points.first(), Some(&output));
+        assert!((points.last().unwrap().x - input.x).abs() < 1e-4);
+        view.zoom_at(viewport, viewport.center(), 0.5);
+        let zoomed = graph_socket(&view, viewport, node, true, 0);
+        assert_ne!(output, zoomed);
+        assert_eq!(before, node.position);
+        assert_ne!(graph_port_color(PortType::Height), graph_port_color(PortType::Mask));
     }
 }
