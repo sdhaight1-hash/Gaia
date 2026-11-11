@@ -1357,7 +1357,7 @@ impl GaiaApp {
 
         // At an overview zoom, draw simplified colored node blocks rather
         // than hundreds of unreadable 1-pixel wires and socket handles.
-        if view.zoom >= 0.20 {
+        if view.zoom >= 0.38 {
         // Draw existing connections behind every card. The cable color
         // identifies the source type; routing uses smooth Bezier curves.
         for node in &old_nodes {
@@ -1404,7 +1404,7 @@ impl GaiaApp {
         let can_move = !space && !middle;
         for node in &mut self.project.graph.nodes {
             let node_rect = view.node_rect(rect, node);
-            if view.zoom < 0.20 {
+            if view.zoom < 0.38 {
                 painter.rect_filled(node_rect.expand(1.0), 1.0,
                     node_accent(&node.kind));
                 continue;
@@ -1481,7 +1481,7 @@ impl GaiaApp {
             for slot in 0..node.inputs.len() {
                 let center = graph_socket(&view, rect, node, false, slot);
                 let hit = egui::Rect::from_center_size(center,
-                    egui::Vec2::splat((25.0 * view.zoom).max(16.0)));
+                    egui::Vec2::splat((PORT_STEP * view.zoom * 0.88).max(8.0)));
                 let hovered = pointer.is_some_and(|p| hit.contains(p) && rect.contains(p));
                 let kind = node.kind.input_type(slot).expect("existing input has a type");
                 let compatible = connecting_type == Some(kind)
@@ -1514,7 +1514,7 @@ impl GaiaApp {
             for (slot, (port, kind)) in node.kind.output_ports().iter().enumerate() {
                 let center = graph_socket(&view, rect, node, true, slot);
                 let hit = egui::Rect::from_center_size(center,
-                    egui::Vec2::splat((25.0 * view.zoom).max(16.0)));
+                    egui::Vec2::splat((PORT_STEP * view.zoom * 0.88).max(8.0)));
                 let hovered = pointer.is_some_and(|p| hit.contains(p) && rect.contains(p));
                 let response = ui.interact(hit,
                     ui.id().with(("output", node.id, slot)),
@@ -1561,7 +1561,8 @@ impl GaiaApp {
                         for node in &old_nodes {
                             for slot in 0..node.inputs.len() {
                                 let point = graph_socket(&view, rect, node, false, slot);
-                                if point.distance(pointer) < (18.0 * view.zoom).max(12.0)
+                                if point.distance(pointer) <
+                                    (PORT_STEP * view.zoom * 0.44).max(4.0)
                                     && node.kind.input_type(slot) == Some(*kind)
                                     && node.id != source.node
                                 {
