@@ -9,6 +9,7 @@ use crate::depression::fill_depressions;
 use crate::rivers::carve_rivers;
 use crate::lakes::fill_lakes;
 use crate::snow::accumulate_snow;
+use crate::plates::plates;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -334,6 +335,14 @@ impl NodeKind {
             ("snow_depth", PortType::Height),
             ("coverage", PortType::Mask),
         ];
+        const PLATES: &[(&str, PortType)] = &[
+            ("height", PortType::Height),
+            ("boundaries", PortType::Mask),
+            ("convergence", PortType::Mask),
+            ("divergence", PortType::Mask),
+            ("plate_ids", PortType::Mask),
+            ("continental", PortType::Mask),
+        ];
         const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const EROSION: &[(&str, PortType)] = &[
             ("height", PortType::Height),
@@ -361,6 +370,7 @@ impl NodeKind {
             Self::Rivers { .. } => RIVERS,
             Self::Lake { .. } => LAKE,
             Self::Snow { .. } => SNOW,
+            Self::Plates { .. } => PLATES,
             Self::MaskLevels { .. } => MASK_LEVELS,
             Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
@@ -369,7 +379,7 @@ impl NodeKind {
 
     pub fn input_type(&self, slot: usize) -> Option<PortType> {
         match (self, slot) {
-            (Self::Mountain { .. } | Self::Island { .. } | Self::Volcano { .. } |
+            (Self::Mountain { .. } | Self::Island { .. } | Self::Volcano { .. } | Self::Plates { .. } |
              Self::Noise { .. } | Self::ImportHeight { .. } |
              Self::Range { .. } | Self::Crater { .. } |
              Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
@@ -409,6 +419,16 @@ fn evaluate_kind(
             NodeOutputs::default().with("height", PortType::Height,
                 volcano(size, *seed, *radius, *height, *mouth, *bulk,
                     *roughness, *center_x, *center_y)),
+        NodeKind::Plates { seed, count, continental, uplift, warp } => {
+            let map = plates(size, *seed, *count, *continental, *uplift, *warp, &cancelled)?;
+            NodeOutputs::default()
+                .with("height", PortType::Height, map.height)
+                .with("boundaries", PortType::Mask, map.boundaries)
+                .with("convergence", PortType::Mask, map.convergence)
+                .with("divergence", PortType::Mask, map.divergence)
+                .with("plate_ids", PortType::Mask, map.plate_ids)
+                .with("continental", PortType::Mask, map.continental)
+        },
         NodeKind::ImportHeight { path, scale } => NodeOutputs::default()
             .with("height", PortType::Height, read_heightmap(Path::new(path), size, *scale)?),
         NodeKind::Colorize { low, high, midpoint, contrast } =>
