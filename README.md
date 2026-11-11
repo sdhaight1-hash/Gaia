@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/drainage-analysis` (stacked on preceding PRs).
+Development branch: `feat/island-generator` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -29,7 +29,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 ## Current workflow
 
-- Left **Node Library**: Mountain, Noise, Mountain Range, Crater, Dunes,
+- Left **Node Library**: Mountain, Island, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Blur, Slope Mask,
   Curvature, Aspect Mask, Drainage, Elevation Mask, Warp, Blend,
   Masked Blend, Colorize and Color Mixer.
@@ -69,6 +69,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Dedicated cancellable worker thread. Rapid changes supersede stale
   jobs without blocking UI interaction.
 - Conservative thermal talus relaxation with cumulative wear/deposit masks.
+- Island generator with seed-controlled shoreline roughness, interior relief,
+  smooth coast gradient and ocean-level outer boundary.
 - Deterministic D8 downslope drainage analysis with contributing-area ledger,
   logarithmic accumulation mask and channel cutoff. Flats/local minima are
   terminal outlets; no depression filling or lake simulation is implied.
