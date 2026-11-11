@@ -168,6 +168,37 @@ impl TileHalo {
     }
 }
 
+/// Precompute a tile's one-cell donor halo once. The neighboring donor
+/// requires the second input halo pixel, but each donor flux is evaluated only
+/// once instead of being recomputed for five adjacent cells.
+struct FluxHalo {
+    left: usize,
+    top: usize,
+    stride: usize,
+    values: Vec<DirectedFlux>,
+}
+
+impl FluxHalo {
+    fn new(tile: &TileHalo, core: Region, size: usize, edge: WorldEdge) -> Self {
+        let left = core.x.saturating_sub(1);
+        let top = core.y.saturating_sub(1);
+        let right = (core.x + core.width + 1).min(size);
+        let bottom = (core.y + core.height + 1).min(size);
+        let stride = right - left;
+        let mut values = Vec::with_capacity(stride * (bottom - top));
+        for y in top..bottom {
+            for x in left..right {
+                values.push(tile.donor(x, y, size, edge));
+            }
+        }
+        Self { left, top, stride, values }
+    }
+
+    fn at(&self, x: usize, y: usize) -> DirectedFlux {
+        self.values[(y - self.top) * self.stride + x - self.left]
+    }
+}
+
 fn validate_params(params: HydraulicParameters) -> Result<(), String> {
     if params.iterations != 1 {
         return Err("Disk hydraulic erosion executes exactly one tick (iterations must be 1)".into());
@@ -216,6 +247,7 @@ impl DiskTransport {
                 n, core, &mut self.height, &mut self.water, &mut self.sediment,
                 params.rain,
             )?;
+            let fluxes = FluxHalo::new(&halo, core, n, edge);
             for y in core.y..core.y + core.height {
                 if cancelled() { return Err("Build cancelled".into()); }
                 let old_wear = if let Some(file) = self.wear.as_mut() {
@@ -233,12 +265,12 @@ impl DiskTransport {
 
                 for x in core.x..core.x + core.width {
                     let i = halo.index(x, y);
-                    let center = halo.donor(x, y, n, edge);
+                    let center = fluxes.at(x, y);
                     let mut dw = 0.0f32;
                     let mut ds = 0.0f32;
                     // Same contribution order as the full-width stripe executor.
                     if y > 0 {
-                        let upper = halo.donor(x, y - 1, n, edge);
+                        let upper = fluxes.at(x, y - 1);
                         let (w, s) = face_delta(
                             (upper.water[3], upper.sediment[3]),
                             (center.water[2], center.sediment[2]), false,
@@ -246,7 +278,7 @@ impl DiskTransport {
                         dw += w; ds += s;
                     }
                     if x > 0 {
-                        let left = halo.donor(x - 1, y, n, edge);
+                        let left = fluxes.at(x - 1, y);
                         let (w, s) = face_delta(
                             (left.water[1], left.sediment[1]),
                             (center.water[0], center.sediment[0]), false,
@@ -254,7 +286,7 @@ impl DiskTransport {
                         dw += w; ds += s;
                     }
                     if x + 1 < n {
-                        let right = halo.donor(x + 1, y, n, edge);
+                        let right = fluxes.at(x + 1, y);
                         let (w, s) = face_delta(
                             (center.water[1], center.sediment[1]),
                             (right.water[0], right.sediment[0]), true,
@@ -262,7 +294,7 @@ impl DiskTransport {
                         dw += w; ds += s;
                     }
                     if y + 1 < n {
-                        let lower = halo.donor(x, y + 1, n, edge);
+                        let lower = fluxes.at(x, y + 1);
                         let (w, s) = face_delta(
                             (center.water[3], center.sediment[3]),
                             (lower.water[2], lower.sediment[2]), true,
