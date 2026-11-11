@@ -1,6 +1,7 @@
 //! Dedicated cancellable background evaluator. The GUI never waits for erosion.
 use crate::pipeline::{BlendCompute, GraphCache, PortRef, PortType};
 use crate::gpu_compute::GpuBlend;
+use crate::color::ColorField;
 use eframe::egui_wgpu::wgpu;
 use crate::terrain::{HeightField, Project};
 use std::sync::{
@@ -22,6 +23,7 @@ pub struct WorkResult {
 pub struct BuildData {
     pub height: HeightField,
     pub preview: HeightField,
+    pub preview_color: Option<ColorField>,
     pub preview_kind: PortType,
     pub computed: usize,
     pub reused: usize,
@@ -133,6 +135,7 @@ fn build(
     Ok(BuildData {
         height: (*height.data).clone(),
         preview: (*preview.data).clone(),
+        preview_color: preview.color.as_ref().map(|rgba| (**rgba).clone()),
         preview_kind: preview.kind,
         computed,
         reused,
