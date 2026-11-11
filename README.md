@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/editor-undo-redo` (stacked on preceding PRs).
+Development branch: `feat/desktop-file-drop` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -48,7 +48,9 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Export normalised 16-bit grayscale PNG heightmaps, selected scalar
   maps, or OBJ terrain meshes. All project parameters and connection
   references are serialized to JSON.
-- Import grayscale 8-/16-bit PNG as a height-producing graph node. When saved,
+- Import grayscale 8-/16-bit PNG as a height-producing graph node, including
+  by dragging a PNG into the desktop editor. Drop a `.gaia.json` file to open
+  a project. When saved,
   file paths become relative to the project file (including sibling folders),
   making scenes portable when assets are moved with them. Absolute paths on
   different Windows drives remain absolute.
