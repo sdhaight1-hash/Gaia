@@ -21,7 +21,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Color/materials | RGBA Color fields, editable altitude palettes, typed masked Color Mixer, 2D/3D vertex-color preview, RGB8 PNG export in GUI/CLI | PBR material model, multi-layer textures, stratified materials, splat/normal maps |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview with continuous slope/elevation palette, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
-| Output/build | Portable JSON projects, grayscale PNG8/PNG16 import, scalar PNG16/RGB8 color PNG/OBJ export, selected-port headless CLI | Large tiled/region builds, adaptive meshes, layered material exports, job queue and DCC/engine integrations |
+| Output/build | Portable JSON projects, PNG8/PNG16 heightmap import, scalar PNG16/RGB8 color PNG/OBJ export, selected-port headless CLI, seam-verified overlapping tile PNG export with manifest | Truly tiled/region graph execution, adaptive meshes, layered materials, build profiles, job queue and DCC/engine integrations |
 | Performance | Cancellable background builds, incremental cache, wgpu preview, first WGSL Blend compute kernel (>=256 samples) | CPU/GPU performance profiling, broader compute kernels, GPU batched graph execution, tiling, memory budgets, GPU numerical sign-off |
 
 ## Acceptance levels
