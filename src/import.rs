@@ -4,8 +4,9 @@ use crate::terrain::HeightField;
 use std::{fs::File, path::Path};
 
 pub fn read_heightmap(path: &Path, target_size: usize, scale: f32) -> Result<HeightField, String> {
-    if !(32..=512).contains(&target_size) {
-        return Err("Imported terrain resolution must be 32–512".into());
+    if !(32..=crate::pipeline::MAX_BUILD_RESOLUTION).contains(&target_size) {
+        return Err(format!("Imported terrain resolution must be 32–{}",
+            crate::pipeline::MAX_BUILD_RESOLUTION));
     }
     if !scale.is_finite() || !(0.0..=8.0).contains(&scale) {
         return Err("Import height scale must be finite and between 0 and 8".into());
