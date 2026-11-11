@@ -300,6 +300,92 @@ impl Graph {
         Ok(())
     }
 
+    /// Delete a connected one-input operator by replacing its outgoing wires
+    /// with its own input. Reject changed types and mixed-output dependencies
+    /// instead of silently breaking graph connections. Edits are atomic.
+    pub fn remove_bypass(&mut self, id: u64) -> Result<(), String> {
+        let node = self.get(id).ok_or_else(|| format!("Missing node #{id}"))?;
+        let consumers: Vec<(u64, usize, PortRef)> = self.nodes.iter()
+            .filter(|other| other.id != id)
+            .flat_map(|other| other.inputs.iter().enumerate()
+                .filter(|(_, input)| input.node == id)
+                .map(|(slot, input)| (other.id, slot, input.clone())))
+            .collect();
+        if consumers.is_empty() {
+            return self.remove(id);
+        }
+        if node.inputs.len() != 1 {
+            return Err("Cannot bypass this node: it needs exactly one input. Use Delete downstream branch.".into());
+        }
+        let upstream = node.inputs[0].clone();
+        let source_type = self.get(upstream.node)
+            .and_then(|n| n.kind.output_ports().iter()
+                .find(|(port, _)| *port == upstream.port))
+            .map(|(_, ty)| *ty)
+            .ok_or("Cannot bypass node with invalid upstream socket")?;
+        let mut candidate = self.clone();
+        for (target, slot, outgoing) in consumers {
+            let outgoing_type = node.kind.output_ports().iter()
+                .find(|(port, _)| *port == outgoing.port)
+                .map(|(_, ty)| *ty);
+            if outgoing_type != Some(source_type) {
+                return Err(format!(
+                    "Cannot bypass node #{id}: output '{}' is not a {} field",
+                    outgoing.port, source_type.label()));
+            }
+            candidate.connect(target, slot, upstream.clone())?;
+        }
+        candidate.remove(id)?;
+        if self.output == id && source_type == crate::pipeline::PortType::Height
+            && upstream.port == "height" {
+            candidate.output = upstream.node;
+        }
+        *self = candidate;
+        Ok(())
+    }
+
+    /// All directly and transitively dependent nodes, including the target.
+    /// Sorted in current graph order so previews and confirmations are stable.
+    pub fn dependent_branch(&self, id: u64) -> Result<Vec<u64>, String> {
+        if self.get(id).is_none() {
+            return Err(format!("Missing node #{id}"));
+        }
+        let mut ids = std::collections::HashSet::from([id]);
+        loop {
+            let before = ids.len();
+            for node in &self.nodes {
+                if node.inputs.iter().any(|input| ids.contains(&input.node)) {
+                    ids.insert(node.id);
+                }
+            }
+            if ids.len() == before { break; }
+        }
+        Ok(self.nodes.iter().filter(|node| ids.contains(&node.id))
+            .map(|node| node.id).collect())
+    }
+
+    /// Explicit destructive operation; removes the selected node and every
+    /// downstream consumer. Never leaves dangling ports or an absent height
+    /// output. The caller should confirm this operation before invoking it.
+    pub fn remove_branch(&mut self, id: u64) -> Result<Vec<u64>, String> {
+        let removed = self.dependent_branch(id)?;
+        let ids: std::collections::HashSet<u64> = removed.iter().copied().collect();
+        let kept: Vec<Node> = self.nodes.iter()
+            .filter(|node| !ids.contains(&node.id)).cloned().collect();
+        let next_output = if ids.contains(&self.output) {
+            kept.iter().rev().find(|node| node.kind.output_ports().iter()
+                .any(|(port, ty)| *port == "height" &&
+                    *ty == crate::pipeline::PortType::Height))
+                .map(|node| node.id)
+                .ok_or("Cannot delete branch: it would remove every height source")?
+        } else {
+            self.output
+        };
+        self.nodes = kept;
+        self.output = next_output;
+        Ok(removed)
+    }
+
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         // An empty project graph can lack both masks and color fields. Invalid
         // placeholder ports like #output:wear poisoned evaluation immediately
@@ -809,6 +895,68 @@ mod tests {
         let mut invalid = field;
         invalid.values[0] = f32::NAN;
         assert!(export_obj(&invalid, &file).is_err());
+    }
+
+    #[test]
+    fn delete_bypass_reconnects_chain_and_preserves_graph_evaluation() {
+        let mut graph = Project::default().graph;
+        let before = graph.nodes.len();
+        assert_eq!(graph.output, 3);
+        graph.remove_bypass(2).unwrap();
+        assert_eq!(graph.nodes.len(), before - 1);
+        assert_eq!(graph.get(3).unwrap().inputs[0], PortRef::height(1));
+        assert_eq!(graph.output, 3);
+        assert!(graph.evaluate(32).is_ok());
+        graph.remove_bypass(3).unwrap();
+        assert_eq!(graph.output, 1);
+        assert!(graph.evaluate(32).is_ok());
+    }
+
+    #[test]
+    fn delete_bypass_rejects_multisource_without_mutating_graph() {
+        let mut graph = Project::default().graph;
+        let blend = graph.add(NodeKind::Blend { mix: 0.5 });
+        let child = graph.add_from(NodeKind::Blur { radius: 2 }, &PortRef::height(blend));
+        let before = serde_json::to_string(&graph).unwrap();
+        assert!(graph.remove_bypass(blend).is_err());
+        assert_eq!(before, serde_json::to_string(&graph).unwrap());
+        assert_eq!(graph.get(child).unwrap().inputs[0], PortRef::height(blend));
+    }
+
+    #[test]
+    fn delete_branch_removes_transitive_dependents_and_repairs_output() {
+        let mut graph = Project::default().graph;
+        let unrelated = graph.add(NodeKind::Noise {
+            seed: 42, frequency: 4.0, amplitude: 0.3,
+        });
+        let removed = graph.remove_branch(2).unwrap();
+        assert!(removed.contains(&2) && removed.contains(&3));
+        assert!(!removed.contains(&1) && !removed.contains(&unrelated));
+        assert_eq!(graph.output, unrelated);
+        assert!(graph.evaluate(32).is_ok());
+        let snapshot = serde_json::to_string(&graph).unwrap();
+        assert!(graph.remove_branch(1).is_ok());
+        assert!(graph.remove_branch(unrelated).is_err(),
+            "last remaining height source cannot be deleted");
+        assert_ne!(snapshot, serde_json::to_string(&graph).unwrap());
+        assert_eq!(graph.output, unrelated);
+    }
+
+    #[test]
+    fn bypass_rejects_nonmatching_derived_port_and_branch_is_atomic() {
+        let mut graph = Project::default().graph;
+        let levels = graph.add(NodeKind::MaskLevels {
+            black: 0.0, white: 1.0, gamma: 1.0, invert: false,
+        });
+        let mask = graph.add_from(NodeKind::MaskLevels {
+            black: 0.1, white: 0.9, gamma: 1.0, invert: false,
+        }, &PortRef::new(levels, "mask"));
+        assert_eq!(graph.get(mask).unwrap().inputs[0], PortRef::new(levels, "mask"));
+        let child = graph.add_from(NodeKind::MaskLevels {
+            black: 0.0, white: 1.0, gamma: 1.0, invert: false,
+        }, &PortRef::new(mask, "mask"));
+        graph.remove_bypass(mask).unwrap();
+        assert_eq!(graph.get(child).unwrap().inputs[0], PortRef::new(levels, "mask"));
     }
 
     #[test]
