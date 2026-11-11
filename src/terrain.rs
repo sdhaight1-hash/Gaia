@@ -49,6 +49,7 @@ impl NodeKind {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Mountain { .. } => "Mountain",
+            Self::ImportHeight { .. } => "Import heightmap",
             Self::Range { .. } => "Mountain range",
             Self::Crater { .. } => "Crater",
             Self::Dunes { .. } => "Dunes",
