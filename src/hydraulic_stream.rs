@@ -942,7 +942,7 @@ mod tests {
             assert!(state.step_eroding(4, WorldEdge::Closed, bad, || false).is_err());
         }
         assert_eq!(state.solid_mass().unwrap(), prior);
-        assert_eq!(state.solid_row(0).unwrap().0, h.values[..32]);
+        assert_eq!(state.solid_row(0).unwrap().0.as_slice(), &h.values[..32]);
     }
 
     #[test]
