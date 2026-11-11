@@ -225,15 +225,74 @@ impl Graph {
     }
 }
 
+/// Build a path relative to the project directory, including sibling assets.
+/// Different Windows drives cannot form a relative path; retain the absolute path.
+fn relative_asset_path(base: &Path, asset: &Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let from: Vec<_> = base.components().collect();
+    let to: Vec<_> = asset.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    if common == 0
+        || from[common..].iter().any(|c| !matches!(c, Component::Normal(_)))
+        || to[common..].iter().any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return None;
+    }
+    let mut relative = std::path::PathBuf::new();
+    for _ in &from[common..] {
+        relative.push("..");
+    }
+    for part in &to[common..] {
+        relative.push(part.as_os_str());
+    }
+    Some(relative)
+}
+
 impl Project {
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        // Keep runtime paths intact. The on-disk JSON uses paths relative to
+        // the project file so moving a project folder with its assets works.
+        let directory = path.parent().filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .canonicalize().map_err(|e| format!("Project directory: {e}"))?;
+        let working_directory = std::env::current_dir().map_err(|e| e.to_string())?;
+        let mut stored = self.clone();
+        for node in &mut stored.graph.nodes {
+            if let NodeKind::ImportHeight { path: asset, .. } = &mut node.kind {
+                let supplied = Path::new(asset);
+                let absolute = if supplied.is_absolute() {
+                    supplied.to_path_buf()
+                } else {
+                    working_directory.join(supplied)
+                };
+                let absolute = absolute.canonicalize().unwrap_or(absolute);
+                let on_disk = relative_asset_path(&directory, &absolute)
+                    .unwrap_or(absolute);
+                *asset = on_disk.to_string_lossy().into_owned();
+            }
+        }
+        let data = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
         std::fs::write(path, data).map_err(|e| e.to_string())
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
         let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let project: Self = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        let mut project: Self = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        let directory = path.parent().filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .canonicalize().map_err(|e| format!("Project directory: {e}"))?;
+        for node in &mut project.graph.nodes {
+            if let NodeKind::ImportHeight { path: asset, .. } = &mut node.kind {
+                let supplied = Path::new(asset);
+                let absolute = if supplied.is_absolute() {
+                    supplied.to_path_buf()
+                } else {
+                    directory.join(supplied)
+                };
+                *asset = absolute.canonicalize().unwrap_or(absolute)
+                    .to_string_lossy().into_owned();
+            }
+        }
         project.graph.evaluate(project.resolution)?;
         Ok(project)
     }
@@ -519,6 +578,49 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let restored: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.graph.evaluate(32).unwrap(), p.graph.evaluate(32).unwrap());
+    }
+
+    #[test]
+    fn imported_heightmap_remains_valid_when_project_folder_moves() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gaia-relative-assets-{}-{unique}", std::process::id()
+        ));
+        let original = root.join("original");
+        let moved = root.join("moved");
+        let assets = original.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let heightmap = assets.join("mountain.png");
+        let field = HeightField {
+            size: 32,
+            values: (0..1024).map(|i| i as f32 / 1023.0).collect(),
+        };
+        export_png16(&field, &heightmap).unwrap();
+
+        let mut project = Project::default();
+        project.resolution = 32;
+        let imported_id = project.graph.add(NodeKind::ImportHeight {
+            path: heightmap.to_string_lossy().into_owned(),
+            scale: 1.0,
+        });
+        let scene = original.join("terrain.gaia.json");
+        project.save(&scene).unwrap();
+        // The runtime graph is not changed by serialization.
+        assert_eq!(project.graph.get(imported_id).unwrap().kind.label(), "Import heightmap");
+        let serialized: Project = serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+        let NodeKind::ImportHeight { path: saved_path, .. } =
+            &serialized.graph.get(imported_id).unwrap().kind else { panic!("wrong node"); };
+        assert_eq!(Path::new(saved_path), Path::new("assets").join("mountain.png"));
+        let expected = Project::load(&scene).unwrap().graph.evaluate(32).unwrap();
+
+        std::fs::rename(&original, &moved).unwrap();
+        let relocated = Project::load(&moved.join("terrain.gaia.json")).unwrap();
+        assert_eq!(relocated.graph.evaluate(32).unwrap(), expected);
+        let copy = moved.join("copy.gaia.json");
+        relocated.save(&copy).unwrap();
+        assert_eq!(Project::load(&copy).unwrap().graph.evaluate(32).unwrap(), expected);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
