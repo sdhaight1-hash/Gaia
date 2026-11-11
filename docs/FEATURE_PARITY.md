@@ -12,7 +12,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 
 | Capability | Implemented on latest development branch | Still missing for Gaea-class workflow |
 |---|---|---|
-| Graph | Typed Height/Mask/Water output ports, multi-output nodes, input type validation, legacy JSON migration, cached DAG, async cancellable builds | On-canvas socket wiring, node deletion, macros, expressions, variables, user subgraphs, undo/redo |
+| Graph | Typed Height/Mask/Water output ports, multi-output nodes, direct socket wiring, safe unused-node deletion, input type validation, legacy JSON migration, cached DAG, async cancellable builds | Graph undo/redo, macros, expressions, variables, user subgraphs and deletion/rewiring of connected nodes |
 | Terrain generators | Mountain, Noise, Range, Crater, Dunes, Canyon | Islands, volcanoes, uplift/tectonics, rock layers, geological diversity, art-directed generator fidelity |
 | Terrain modifiers | Terrace, Blur, Warp, Blend, Masked Blend | Fracture, strata, displacement operators, custom remaps, more blending modes |
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
@@ -20,7 +20,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Masks | Slope, Curvature, Elevation, Wear, Deposits, Flow | Aspect, terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
 | Color/materials | No true Color fields | Colorized surfaces, gradients, texture/multi-channel materials, splat/normal maps |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
-| Viewport/editor | Themed docked workspace, 2D maps, orbiting wgpu 3D mesh preview, property inspector, export menu | Depth-tested viewport, per-node thumbnails, direct socket wiring, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
+| Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
 | Output/build | Transparent JSON projects, normalized 16-bit PNG and OBJ, export selected scalar map | Large tiled/region builds, adaptive meshes, heightfield import, texture/material exports, CLI/job queue, DCC/engine integrations |
 | Performance | Cancellable background builds, incremental cache, wgpu preview, first WGSL Blend compute kernel (>=256 samples) | CPU/GPU performance profiling, broader compute kernels, GPU batched graph execution, tiling, memory budgets, GPU numerical sign-off |
 
