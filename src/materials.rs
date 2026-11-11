@@ -14,6 +14,23 @@ fn smoothstep(low: f32, high: f32, value: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Shared pixel-local material classifier for full-grid and regional builds.
+/// Channel order: sand, soil, rock, snow. Outputs sum to 1 up to f32 rounding.
+pub(crate) fn material_weights_at(
+    h: f32, steepness: f32, sea_level: f32, beach_width: f32,
+    rock_slope: f32, rock_blend: f32, snowline: f32, snow_blend: f32,
+) -> [f32; 4] {
+    let rock = smoothstep(rock_slope - rock_blend * 0.5,
+        rock_slope + rock_blend * 0.5, steepness);
+    let beach = 1.0 - smoothstep(sea_level, sea_level + beach_width, h);
+    let snowy = smoothstep(snowline - snow_blend * 0.5,
+        snowline + snow_blend * 0.5, h);
+    let gentle = 1.0 - rock;
+    let inland = 1.0 - beach;
+    [gentle * beach, gentle * inland * (1.0 - snowy),
+        rock, gentle * inland * snowy]
+}
+
 /// Rock owns steep faces; gentle low terrain becomes sand, high terrain snow,
 /// and the remaining coverage is soil. Every pixel's four weights sum to 1.
 pub fn classify_materials(
@@ -49,18 +66,13 @@ pub fn classify_materials(
         if cancelled() { return Err("Build cancelled".into()); }
         for x in 0..n {
             let i = y * n + x;
-            let h = height.values[i];
-            let rock = smoothstep(rock_slope - rock_blend * 0.5,
-                rock_slope + rock_blend * 0.5, steepness.values[i]);
-            let beach = 1.0 - smoothstep(sea_level, sea_level + beach_width, h);
-            let snowy = smoothstep(snowline - snow_blend * 0.5,
-                snowline + snow_blend * 0.5, h);
-            let gentle = 1.0 - rock;
-            let inland = 1.0 - beach;
+            let [sand, soil, rock, snow] = material_weights_at(
+                height.values[i], steepness.values[i], sea_level,
+                beach_width, rock_slope, rock_blend, snowline, snow_blend);
+            fields.sand.values[i] = sand;
+            fields.soil.values[i] = soil;
             fields.rock.values[i] = rock;
-            fields.sand.values[i] = gentle * beach;
-            fields.snow.values[i] = gentle * inland * snowy;
-            fields.soil.values[i] = gentle * inland * (1.0 - snowy);
+            fields.snow.values[i] = snow;
         }
     }
     Ok(fields)
