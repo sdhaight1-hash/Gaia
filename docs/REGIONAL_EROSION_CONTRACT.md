@@ -104,6 +104,35 @@ regional CLI must continue rejecting Hydraulic. Also, 4K/8K disk/CPU/RSS
 benchmarks have not been run on the target hardware.
 The normal region CLI must keep rejecting global hydraulic operations.
 
+## Restartable disk-state checkpoint checkpoint (experimental)
+
+`src/hydraulic_checkpoint.rs` adds `DiskTransport::save_checkpoint`
+and `DiskTransport::open_checkpoint`. A checkpoint is an immutable,
+versioned directory containing up to six little-endian f32 full-world field
+files and a small `manifest.json`. Height, water and suspended sediment
+are mandatory; outgoing-flow is optional before a first tick; cumulative
+wear and deposits must both be present or both absent. Saving and loading
+stream one world row at a time and retain **O(world width)** memory cost.
+
+Saving requires a **new, non-existent destination** inside an existing
+parent directory. Files are staged in a sibling temporary directory,
+validated for finite/nonnegative samples, flushed, and published with a
+same-filesystem directory rename. Cancellation/error discards the staged
+directory. Loading validates the manifest version, 32–8192 resolution,
+exact field sizes, nonnegative/finite samples, and a deterministic FNV-1a
+checksum for each present file before constructing a separate scratch
+state. FNV-1a detects accidental corruption, **not malicious tampering**.
+
+This is a simple manual checkpoint API, not continuous durable storage:
+there is no multi-generation journal or undo history, guaranteed
+power-loss recovery, compression, unattended autosave, disk-space
+reservation, or UI/CLI project-format integration. On-disk field sizes
+are large; six full 8192² float fields require about 1.5 GiB per
+checkpoint, plus transient staging space. Tests exercise save/load
+equivalence, restart/continuation, optional field presence,
+corruption/truncation, cancellation cleanup, existing destination
+preservation and version rejection.
+
 ## Narrow implementation sequence
 
 1. Extract a pure canonical interior-face flux operator from the existing
