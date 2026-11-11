@@ -186,6 +186,36 @@ impl Graph {
         Ok(())
     }
 
+    /// Remove only an unused node. Reject connections and the last height
+    /// source rather than leaving dangling port references in the graph.
+    pub fn remove(&mut self, id: u64) -> Result<(), String> {
+        let index = self.nodes.iter().position(|node| node.id == id)
+            .ok_or_else(|| format!("Missing node #{id}"))?;
+        if let Some(dependent) = self.nodes.iter()
+            .find(|node| node.id != id && node.inputs.iter().any(|input| input.node == id))
+        {
+            return Err(format!(
+                "Cannot delete node #{id}: it is used by node #{}",
+                dependent.id
+            ));
+        }
+        let replacement = if self.output == id {
+            Some(self.nodes.iter().rev()
+                .find(|node| node.id != id && node.kind.output_ports().iter()
+                    .any(|(port, ty)| *port == "height"
+                        && *ty == crate::pipeline::PortType::Height))
+                .map(|node| node.id)
+                .ok_or_else(|| "Cannot delete the last height output node".to_owned())?)
+        } else {
+            None
+        };
+        self.nodes.remove(index);
+        if let Some(output) = replacement {
+            self.output = output;
+        }
+        Ok(())
+    }
+
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
         let inputs = match kind.input_count() {
@@ -570,6 +600,35 @@ mod tests {
         assert!(p.graph.connect(2, 0, PortRef::new(slope, "slope"))
             .unwrap_err().contains("Cannot connect"));
         assert_eq!(p.graph.get(2).unwrap().inputs[0], PortRef::height(1));
+    }
+
+    #[test]
+    fn deleting_unused_output_selects_previous_height_source() {
+        let mut project = Project::default();
+        let id = project.graph.add(NodeKind::Noise {
+            seed: 81, frequency: 4.0, amplitude: 0.5,
+        });
+        assert_eq!(project.graph.output, id);
+        project.graph.remove(id).unwrap();
+        assert_eq!(project.graph.output, 3);
+        assert!(project.graph.get(id).is_none());
+        assert!(project.graph.evaluate(32).is_ok());
+    }
+
+    #[test]
+    fn deleting_connected_or_last_height_node_is_rejected_without_mutation() {
+        let mut project = Project::default();
+        let before = serde_json::to_string(&project.graph).unwrap();
+        assert!(project.graph.remove(1).unwrap_err().contains("used by node #2"));
+        assert_eq!(serde_json::to_string(&project.graph).unwrap(), before);
+        assert!(project.graph.remove(999).unwrap_err().contains("Missing node"));
+        assert_eq!(serde_json::to_string(&project.graph).unwrap(), before);
+
+        let only_height = project.graph.nodes[0].clone();
+        let mut single = Graph { nodes: vec![only_height], output: 1 };
+        assert!(single.remove(1).unwrap_err().contains("last height"));
+        assert_eq!(single.nodes.len(), 1);
+        assert_eq!(single.output, 1);
     }
 
     #[test]
