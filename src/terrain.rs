@@ -78,7 +78,7 @@ impl NodeKind {
                 Self::Range { .. } | Self::Crater { .. } |
                 Self::Dunes { .. } | Self::Canyon { .. } => 0,
             Self::Blend { .. } => 2,
-            Self::MaskedBlend { .. } => 3,
+            Self::MaskedBlend { .. } | Self::ColorMixer { .. } => 3,
             _ => 1,
         }
     }
