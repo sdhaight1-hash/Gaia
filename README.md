@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/lake-basins` (stacked on preceding PRs).
+Development branch: `feat/snow-settling` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Island, Volcano, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
-  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Elevation Mask, Mask Levels, Warp,
+  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Snow, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
@@ -104,6 +104,10 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   original terrain Height, inundated surface Height, depth Water and coverage Mask.
   It is not rainfall/evaporation driven or time-evolving, and volume units require
   a real-world cell area that Gaia does not yet know.
+- Snow: seeded altitude-dependent deposition, melt, slope adhesion and conservative
+  downslope settling. Outputs snow-covered Height, raw snow_depth Height and
+  normalized coverage Mask. Snowfall and melt are separate from settling mass
+  conservation; this is not a particle snowfall, temperature or glacier solver.
 - Experimental hydraulic erosion: rain, water advection, sediment
   transport, erosion/deposition, evaporation, boundary outflow ledgers.
   Water/solids are tested for mass consistency.
