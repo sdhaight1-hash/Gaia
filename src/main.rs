@@ -213,7 +213,7 @@ impl GaiaApp {
                 let path = Path::new(&self.filename)
                     .with_extension(format!("{}.png", self.preview_source.port));
                 self.status = match if value.kind == PortType::Splat {
-                    value.color.as_ref().ok_or("Missing splat weights")
+                    value.color.as_ref().ok_or_else(|| "Missing splat weights".to_owned())
                         .and_then(|data| export_rgba8(data, &path))
                 } else if let Some(color) = &value.color {
                     export_rgb8(color, &path)

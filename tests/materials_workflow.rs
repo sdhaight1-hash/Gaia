@@ -78,7 +78,7 @@ fn masks_roundtrip_compose_and_export_all_outputs() {
     splat.next_frame(&mut bytes).unwrap();
     for channels in bytes.chunks_exact(4) {
         let sum: i32 = channels.iter().map(|v| i32::from(*v)).sum();
-        assert!((sum - 255).abs() <= 1, "packed weights should sum to 255 ± 1");
+        assert_eq!(sum, 255, "packed weights must sum to exactly 255");
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

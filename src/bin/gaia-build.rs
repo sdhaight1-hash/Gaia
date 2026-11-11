@@ -372,7 +372,7 @@ fn build(options: Options) -> Result<(), String> {
         "obj": obj,
         "tile_manifest": tile_metadata,
         "png_normalization": if png_format == "RGBA8" {
-            "clamp all four weight channels to [0,1] and multiply by 255"
+            "normalize weights then largest-remainder quantize to RGBA8 summing exactly 255"
         } else if png_format == "RGB8" {
             "clamp RGB channels to [0,1] and multiply by 255; discard alpha"
         } else {

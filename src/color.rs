@@ -81,14 +81,43 @@ pub fn export_rgb8(field: &ColorField, path: &Path) -> Result<(), String> {
     writer.write_image_data(&bytes).map_err(|error| error.to_string())
 }
 
-/// RGBA8 export for four-channel material splat weights.
-/// Unlike an opaque color map, the alpha channel is essential data.
+/// Export four normalized material weights as RGBA8 splat data.
+/// Largest-remainder quantization distributes the lost fractions so the
+/// four integer channels always sum to exactly 255, including alpha.
 pub fn export_rgba8(field: &ColorField, path: &Path) -> Result<(), String> {
     if field.size == 0 || field.size.checked_mul(field.size) != Some(field.pixels.len())
-        || field.pixels.iter().any(|pixel| pixel.iter().any(|c| !c.is_finite()))
+        || field.pixels.iter().any(|pixel|
+            pixel.iter().any(|v| !v.is_finite() || *v < 0.0))
     {
-        return Err("RGBA8 export requires a finite square colorfield".into());
+        return Err("Splat export requires a finite nonnegative square colorfield".into());
     }
+    let mut bytes = Vec::with_capacity(field.pixels.len() * 4);
+    for pixel in &field.pixels {
+        let total: f64 = pixel.iter().map(|v| f64::from(*v)).sum();
+        if total <= 0.0 {
+            return Err("Splat weights must have positive total coverage".into());
+        }
+        let mut quantized = [0u8; 4];
+        let mut fractions = [0.0f64; 4];
+        let mut used = 0usize;
+        for c in 0..4 {
+            let scaled = (f64::from(pixel[c]) / total) * 255.0;
+            let whole = scaled.floor().clamp(0.0, 255.0) as u8;
+            quantized[c] = whole;
+            fractions[c] = scaled - f64::from(whole);
+            used += usize::from(whole);
+        }
+        if used > 255 || 255 - used > 4 {
+            return Err("Splat quantization failed to conserve coverage".into());
+        }
+        let mut order = [0usize, 1, 2, 3];
+        order.sort_by(|a, b| fractions[*b].total_cmp(&fractions[*a]).then_with(|| a.cmp(b)));
+        for &index in order.iter().take(255 - used) {
+            quantized[index] += 1;
+        }
+        bytes.extend_from_slice(&quantized);
+    }
+
     let output = std::io::BufWriter::new(
         std::fs::File::create(path).map_err(|error| error.to_string())?
     );
@@ -96,12 +125,6 @@ pub fn export_rgba8(field: &ColorField, path: &Path) -> Result<(), String> {
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
-    let mut bytes = Vec::with_capacity(field.pixels.len() * 4);
-    for pixel in &field.pixels {
-        for &component in pixel {
-            bytes.push((component.clamp(0.0, 1.0) * 255.0).round() as u8);
-        }
-    }
     writer.write_image_data(&bytes).map_err(|error| error.to_string())
 }
 
@@ -123,7 +146,11 @@ mod tests {
         assert_eq!(reader.info().color_type, png::ColorType::Rgba);
         let mut buf = vec![0; reader.output_buffer_size()];
         reader.next_frame(&mut buf).unwrap();
-        assert_eq!(&buf[..4], &[26, 51, 77, 102]);
+        assert_eq!(buf[..4].iter().map(|v| u16::from(*v)).sum::<u16>(), 255);
+        for (quantized, rounded) in buf[..4].iter().zip([26i16, 51, 77, 102]) {
+            assert!((i16::from(*quantized) - rounded).abs() <= 1);
+        }
+        assert!(buf[3] > 0, "the fourth material weight must survive alpha");
         std::fs::remove_file(path).unwrap();
     }
 
