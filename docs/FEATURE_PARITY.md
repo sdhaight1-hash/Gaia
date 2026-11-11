@@ -16,8 +16,8 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Terrain generators | Mountain, Noise, Range, Crater, Dunes, Canyon | Islands, volcanoes, uplift/tectonics, rock layers, geological diversity, art-directed generator fidelity |
 | Terrain modifiers | Terrace, Blur, Warp, Blend, Masked Blend | Fracture, strata, displacement operators, custom remaps, more blending modes |
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
-| Hydrology | Water depth, suspended sediment, cumulative flow map | Rivers/lakes/sea geometry, watershed hierarchy, coastlines, stable high-resolution water systems |
-| Masks | Slope, Curvature, compass-facing Aspect, Elevation, Wear, Deposits, Flow | Terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
+| Hydrology | Water depth, suspended sediment, cumulative simulation flow plus D8 downhill contributing area and channel masks | Depression filling, connected river/lake/sea geometry, watershed hierarchy, coastlines, stable high-resolution systems |
+| Masks | Slope, Curvature, compass-facing Aspect, drainage Accumulation/Channels, Elevation, Wear, Deposits, Flow | Feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
 | Color/materials | RGBA Color fields, editable altitude palettes, typed masked Color Mixer, 2D/3D vertex-color preview, RGB8 PNG export in GUI/CLI | PBR material model, multi-layer textures, stratified materials, splat/normal maps |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
@@ -46,7 +46,7 @@ Real GPU numerical results remain required.
    on a real Windows GPU; native file dialogs remain incomplete.
 2. Add terrain import and output units/scales, batch builds, diagnostic
    overlays and a reproducible benchmark suite.
-3. Expand hydrology (flow accumulation, drains, channel extraction, lakes),
+3. Extend D8 drainage through depression treatment, river tracing and lakes;
    test water/solid ledgers over long runs and validate tile seams.
 4. Evolve the colorized 3D preview into proper layered PBR materials, then
    environment-aware surface and ecosystem models.
