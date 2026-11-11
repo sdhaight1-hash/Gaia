@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/plate-boundary-uplift` (stacked on preceding PRs).
+Development branch: `feat/sea-coastal-surface` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Island, Volcano, Plates, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
-  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Snow, Elevation Mask, Mask Levels, Warp,
+  Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Sea, Snow, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
@@ -107,6 +107,11 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   prevent new terminal pits. Outputs carved Height, channels Mask and normalized
   wear Mask. This first version does not model rain discharge, water surface,
   sediment mass conservation or art-directable headwater masks.
+- Sea: static sea-level inundation with actual dry/wet coastline detection,
+  flat water surface, raw water depth, wet/shore/beach masks and adjustable
+  local coastline smoothing. Shoreline distance uses raster adjacency, not
+  a blanket elevation band; no waves, tides, dynamic coastal sediment or
+  ocean circulation are implemented.
 - Lake: static outlet-bounded basin filling with flat water surfaces, selectable
   fill fraction, minimum basin area and potential depth thresholds. Exports
   original terrain Height, inundated surface Height, depth Water and coverage Mask.
