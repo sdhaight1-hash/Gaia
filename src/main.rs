@@ -556,7 +556,7 @@ impl GaiaApp {
             }
             let mut close = false;
             egui::Window::new("Delete selected graph branches?")
-                .id(egui::Id::new("gaia_delete_multiple_confirm"))
+                .id(egui::Id::unique("gaia_delete_multiple_confirm"))
                 .collapsible(false).resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
@@ -585,7 +585,7 @@ impl GaiaApp {
         let branch = self.project.graph.dependent_branch(id).unwrap_or_default();
         let mut close = false;
         egui::Window::new("Delete connected branch?")
-            .id(egui::Id::new("gaia_delete_branch_confirm"))
+            .id(egui::Id::unique("gaia_delete_branch_confirm"))
             .collapsible(false).resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
@@ -1497,11 +1497,11 @@ impl GaiaApp {
             // competed with port handles, causing attempted cable drags to
             // move cards instead of beginning a connection.
             let response = ui.interact(node_rect,
-                ui.id().with(("node-select", node.id)), egui::Sense::click());
+                ui.scope_id().with(("node-select", node.id)), egui::Sense::click());
             let title_rect = egui::Rect::from_min_size(node_rect.min,
                 egui::vec2(node_rect.width(), 42.0 * view.zoom));
             let title_response = ui.interact(title_rect,
-                ui.id().with(("node-title", node.id)),
+                ui.scope_id().with(("node-title", node.id)),
                 egui::Sense::click_and_drag())
                 .on_hover_text("Drag header to move · right-click for actions");
             let node_id = node.id;
@@ -1572,7 +1572,7 @@ impl GaiaApp {
                 let kind = node.kind.input_type(slot).expect("existing input has a type");
                 let compatible = connecting_type == Some(kind)
                     && self.wire_start.as_ref().is_some_and(|source| source.node != node.id);
-                let resp = ui.interact(hit, ui.id().with(("input", node.id, slot)),
+                let resp = ui.interact(hit, ui.scope_id().with(("input", node.id, slot)),
                     egui::Sense::click()).on_hover_text(format!(
                     "Input {} · {} · click to replace cable, then click output", slot + 1, kind.label()));
                 resp.context_menu(|ui| {
@@ -1628,7 +1628,7 @@ impl GaiaApp {
                     egui::Vec2::splat((PORT_STEP * view.zoom * 0.88).max(8.0)));
                 let hovered = pointer.is_some_and(|p| hit.contains(p) && rect.contains(p));
                 let response = ui.interact(hit,
-                    ui.id().with(("output", node.id, slot)),
+                    ui.scope_id().with(("output", node.id, slot)),
                     egui::Sense::click_and_drag()).on_hover_text(format!(
                     "Output {} · {} · click or drag to connect", port, kind.label()));
                 if response.drag_started() {
