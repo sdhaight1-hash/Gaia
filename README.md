@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/aspect-mask` (stacked on preceding PRs).
+Development branch: `feat/integrated-color-surfaces` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -31,7 +31,8 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 - Left **Node Library**: Mountain, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Blur, Slope Mask,
-  Curvature, Aspect Mask, Elevation Mask, Warp, Blend and Masked Blend.
+  Curvature, Aspect Mask, Elevation Mask, Warp, Blend, Masked Blend,
+  Colorize and Color Mixer.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. Unused nodes can be deleted in the
   right **Inspector**; nodes with dependents are protected.
@@ -39,15 +40,17 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
 - Center **2D map**: choose any existing node output port (height,
-  wear, deposits, flow, water, sediment, slope, curvature, aspect, elevation mask)
+  wear, deposits, flow, water, sediment, slope, curvature, aspect,
+  elevation mask, color)
   and inspect the result.
 - Top toolbar: Save, Open, Undo, Redo, Export, Rebuild. `Ctrl+S`,
   `Ctrl+O`, `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
   drags coalesce into one undo step; history holds the last 64 edits.
   Save/Open use an editable project path, not file dialogs.
-- Export normalised 16-bit grayscale PNG heightmaps, selected scalar
-  maps, or OBJ terrain meshes. All project parameters and connection
-  references are serialized to JSON.
+- Export normalized 16-bit grayscale PNG scalar maps, RGB8 PNG color maps,
+  or OBJ terrain meshes. Color is stored as typed RGBA data in the graph,
+  not faked by an 8-bit heightfield. All graph parameters and connections
+  are serialized to JSON.
 - Import grayscale 8-/16-bit PNG as a height-producing graph node, including
   by dragging a PNG into the desktop editor. Drop a `.gaia.json` file to open
   a project. When saved,
@@ -82,9 +85,10 @@ cargo run --release --bin gaia-build -- --project terrain.gaia.json --output bui
 cargo run --release --bin gaia-build -- --project terrain.gaia.json --output builds/erosion-wear --port 2:wear --no-obj
 ```
 
-Every build writes normalized 16-bit PNG plus a JSON report of dimensions,
-raw min/max/mean, selected graph port and export metadata. Height outputs
-also write OBJ unless `--no-obj` is set. The current supported resolutions
+Scalar builds write normalized 16-bit grayscale PNG; Color builds write
+RGB8 PNG (alpha intentionally omitted). Every build writes a JSON report
+of dimensions, scalar/luminance min/max/mean, selected port and export format.
+Height outputs also write OBJ unless `--no-obj` is set. The current supported resolutions
 are 32–512, and the build is single-grid (not tiled).
 
 ## Verification
@@ -101,17 +105,17 @@ adapter is available; that is **not** evidence of GPU correctness.
 
 ## Known limitations
 
-- Native file dialogs, color materials, terrain painting,
+- Native file dialogs, realistic multi-layer PBR materials, terrain painting,
   vegetation, snow/glaciers, lakes, rivers, tiles, large resolutions,
   high-end geology and production exports are not finished.
-- Graph cores are currently height/mask/water scalar fields. Color,
-  vector, points and mesh port types are reserved but not populated.
+- Graph ports support Height, Mask, Water and true RGBA Color fields.
+  Vector, Points and Mesh port types are reserved but not populated.
 - The hydraulic model is an experimental reference implementation,
   **not** numerically or visually identical to Gaea's erosion solvers.
 - GPU blending requires a working GPU and needs performance profiling.
   There is no claim that GPU compute is faster for every graph operation.
-- The current 3D preview uses sorted triangle cells, not a proper
-  depth-buffered render target.
+- The 3D preview uses depth-tested wgpu rendering; RGBA Color is shown
+  in the 2D selected-map preview, not yet mapped onto 3D materials.
 - Windows screenshot/video sign-off is still required for the 1080p UI.
 
 ## Source layout
@@ -125,6 +129,8 @@ adapter is available; that is **not** evidence of GPU correctness.
 `src/geology.rs` — terrain generators, warp and structural masks.
 
 `src/hydrology.rs` — conservative hydraulic erosion and mass ledgers.
+
+`src/color.rs` — typed RGBA color fields, palettes, mask mixing and RGB8 export.
 
 `src/gpu_compute.rs`, `src/blend.wgsl` — WGSL compute masked blending.
 
