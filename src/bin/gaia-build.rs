@@ -2,22 +2,26 @@
 //! No window or GPU required; intended for production pipelines and CI.
 use gaia::pipeline::{PortRef, PortType};
 use gaia::color::export_rgb8;
+use gaia::tiles::{tile_layout, tile_height, tile_color};
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
 use std::{env, path::PathBuf, process, time::Instant};
 
 const HELP: &str = r#"Gaia headless terrain builder
-Usage: gaia-build --project FILE --output STEM [--resolution N] [--port NODE:PORT] [--no-obj]
-       gaia-build --demo --output STEM [--resolution N] [--no-obj]
+Usage: gaia-build --project FILE --output STEM [--resolution N] [--port NODE:PORT] [--no-obj] [--tiles COUNT]
+       gaia-build --demo --output STEM [--resolution N] [--no-obj] [--tiles COUNT]
 
 Examples:
   gaia-build --project terrain.gaia.json --output builds/mountain
   gaia-build --project terrain.gaia.json --output builds/wear --port 2:wear --no-obj
   gaia-build --demo --output builds/sample --resolution 256
+  gaia-build --project terrain.gaia.json --output builds/land --tiles 4
 
 Exports PNG16 for scalar fields, RGB8 for Color fields, and OBJ for height outputs.
-Writes STEM.report.json.
-N must be 32 through 512 (current in-memory engine limit).
+Writes STEM.report.json. --tiles produces N×N PNGs in STEM.tiles/ plus
+STEM.tiles.json, each tile sharing one identical border pixel with neighbors.
+This subdivides an already-built field; it does not reduce graph build memory.
+Resolution must be 32–512; tile COUNT must be 2–8.
 "#;
 
 #[derive(Debug)]
@@ -28,6 +32,7 @@ struct Options {
     selected: Option<PortRef>,
     demo: bool,
     no_obj: bool,
+    tiles: Option<usize>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>, String> {
@@ -38,11 +43,21 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     let mut selected = None;
     let mut demo = false;
     let mut no_obj = false;
+    let mut tiles = None;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(None),
             "--demo" => demo = true,
             "--no-obj" => no_obj = true,
+            "--tiles" => {
+                let value = it.next().ok_or("--tiles requires COUNT")?;
+                let count: usize = value.parse()
+                    .map_err(|_| "--tiles COUNT must be an integer")?;
+                if !(2..=8).contains(&count) {
+                    return Err("--tiles COUNT must be between 2 and 8".into());
+                }
+                tiles = Some(count);
+            },
             "--project" => {
                 project = Some(PathBuf::from(it.next().ok_or("--project requires a file")?));
             }
@@ -79,7 +94,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     if output.as_os_str().is_empty() {
         return Err("--output must be non-empty".into());
     }
-    Ok(Some(Options { project, output, resolution, selected, demo, no_obj }))
+    Ok(Some(Options { project, output, resolution, selected, demo, no_obj, tiles }))
 }
 
 fn build(options: Options) -> Result<(), String> {
@@ -115,6 +130,46 @@ fn build(options: Options) -> Result<(), String> {
         export_obj(&field.data, &file)?;
         obj = Some(file.display().to_string());
     }
+    // A single world-consistent graph build is subdivided *after* evaluation,
+    // preventing per-tile erosion, normalization or color discontinuities.
+    let tile_metadata = if let Some(count) = options.tiles {
+        let layout = tile_layout(project.resolution, count)?;
+        let directory = options.output.with_extension("tiles");
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        for ty in 0..count {
+            for tx in 0..count {
+                let file = directory.join(format!("x{tx:02}_y{ty:02}.png"));
+                if field.kind == PortType::Color {
+                    let color = field.color.as_ref()
+                        .ok_or("Color output has no RGBA data for tiling")?;
+                    export_rgb8(&tile_color(color, layout, tx, ty)?, &file)?;
+                } else {
+                    export_png16(&tile_height(&field.data, layout, tx, ty)?, &file)?;
+                }
+            }
+        }
+        let manifest_path = options.output.with_extension("tiles.json");
+        let manifest = json!({
+            "tiles_per_axis": count,
+            "tile_count": count * count,
+            "pixel_size": layout.pixels_per_tile,
+            "overlap_pixels": layout.overlap_pixels,
+            "stitched_pixels": layout.stitched_pixels,
+            "source_pixels": project.resolution,
+            "format": png_format,
+            "folder": directory.display().to_string(),
+            "file_pattern": "x{XX}_y{YY}.png",
+            "origin": "top-left, x increases right, y increases downward",
+            "sampling": "full-grid world-space bilinear, uniform resampling",
+            "processing": "complete graph is evaluated first (not streaming/tiled evaluation)",
+        });
+        std::fs::write(&manifest_path,
+            serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?
+        ).map_err(|e| e.to_string())?;
+        Some(manifest_path.display().to_string())
+    } else {
+        None
+    };
     let (min, max, sum) = field.data.values.iter()
         .fold((f32::INFINITY, f32::NEG_INFINITY, 0.0_f64), |(min, max, sum), &v| {
             (min.min(v), max.max(v), sum + f64::from(v))
@@ -136,6 +191,7 @@ fn build(options: Options) -> Result<(), String> {
         "rgb8": if png_format == "RGB8" { Some(png.display().to_string()) } else { None },
         "statistics_channel": if png_format == "RGB8" { "Rec709 luminance proxy" } else { "raw scalar" },
         "obj": obj,
+        "tile_manifest": tile_metadata,
         "png_normalization": if png_format == "RGB8" {
             "clamp RGB channels to [0,1] and multiply by 255; discard alpha"
         } else {
@@ -185,6 +241,19 @@ mod tests {
     }
 
     #[test]
+    fn validates_tile_count_argument() {
+        let args = |count: &str| vec![
+            "--demo".into(), "--output".into(), "x".into(),
+            "--tiles".into(), count.into(),
+        ];
+        assert_eq!(parse_args(args("2")).unwrap().unwrap().tiles, Some(2));
+        assert_eq!(parse_args(args("8")).unwrap().unwrap().tiles, Some(8));
+        assert!(parse_args(args("1")).is_err());
+        assert!(parse_args(args("9")).is_err());
+        assert!(parse_args(args("abc")).is_err());
+    }
+
+    #[test]
     fn accepts_mask_output_without_mesh() {
         let options = parse_args(vec![
             "--demo".into(), "--output".into(), "out".into(),
@@ -216,7 +285,7 @@ mod tests {
         build(Options {
             project: Some(scene), output: stem.clone(),
             resolution: None, selected: Some(PortRef::new(color_id, "color")),
-            demo: false, no_obj: false,
+            demo: false, no_obj: false, tiles: None,
         }).unwrap();
         let file = std::fs::File::open(stem.with_extension("png")).unwrap();
         let reader = png::Decoder::new(std::io::BufReader::new(file));
@@ -267,6 +336,7 @@ mod tests {
             selected: None,
             demo: false,
             no_obj: true,
+            tiles: None,
         }).unwrap();
         assert!(stem.with_extension("png").exists());
         let restored = gaia::import::read_heightmap(
@@ -277,6 +347,58 @@ mod tests {
             &std::fs::read(stem.with_extension("report.json")).unwrap()
         ).unwrap();
         assert_eq!(report["type"], "Height");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn headless_tiled_export_has_matching_png16_borders_and_manifest() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(
+            format!("gaia-cli-tiles-{}-{unique}", process::id()));
+        let stem = root.join("terrain");
+        build(Options {
+            project: None, output: stem.clone(), resolution: Some(32),
+            selected: None, demo: true, no_obj: true, tiles: Some(2),
+        }).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("tiles.json")).unwrap()
+        ).unwrap();
+        assert_eq!(manifest["tiles_per_axis"], 2);
+        assert_eq!(manifest["tile_count"], 4);
+        assert_eq!(manifest["overlap_pixels"], 1);
+        assert_eq!(manifest["stitched_pixels"], 33);
+        let dir = stem.with_extension("tiles");
+        let read = |name: &str| {
+            let file = std::fs::File::open(dir.join(name)).unwrap();
+            let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+                .read_info().unwrap();
+            let mut pixels = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut pixels).unwrap();
+            assert_eq!(info.color_type, png::ColorType::Grayscale);
+            assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+            assert_eq!(info.width, 17);
+            pixels
+        };
+        let a = read("x00_y00.png");
+        let b = read("x01_y00.png");
+        let c = read("x00_y01.png");
+        let pixels = 17;
+        let stride = pixels * 2;
+        for row in 0..pixels {
+            assert_eq!(
+                &a[row*stride+(pixels-1)*2..row*stride+pixels*2],
+                &b[row*stride..row*stride+2]
+            );
+            assert_eq!(
+                &a[(pixels-1)*stride+row*2..(pixels-1)*stride+row*2+2],
+                &c[row*2..row*2+2]
+            );
+        }
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stem.with_extension("report.json")).unwrap()
+        ).unwrap();
+        assert!(report["tile_manifest"].as_str().unwrap().ends_with("terrain.tiles.json"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -292,6 +414,7 @@ mod tests {
             selected: None,
             demo: true,
             no_obj: false,
+            tiles: None,
         }).unwrap();
         assert!(stem.with_extension("png").exists());
         assert!(stem.with_extension("obj").exists());
