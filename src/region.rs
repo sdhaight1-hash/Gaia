@@ -7,7 +7,8 @@
 //! scientifically valid region/bucket algorithms.
 use crate::pipeline::{PortRef, PortType};
 use crate::terrain::{Graph, NodeKind, sample_mountain, sample_noise};
-use crate::color::{mix_pixel, palette_pixel};
+use crate::color::{mix_pixel, palette_pixel, quantize_splat_pixel};
+use crate::materials::material_weights_at;
 use std::path::Path;
 
 pub const MAX_REGION_RESOLUTION: usize = 8192;
@@ -113,13 +114,15 @@ impl RegionField {
 #[derive(Clone, Debug)]
 pub struct RegionColorField {
     pub region: Region,
+    pub kind: PortType,
     pub pixels: Vec<[f32; 4]>,
 }
 
 impl RegionColorField {
     /// Matches the ordinary full-grid Color PNG export: RGB8, no alpha.
     pub fn export_rgb8(&self, path: &Path) -> Result<(), String> {
-        if self.region.area() != self.pixels.len() ||
+        if self.kind != PortType::Color ||
+            self.region.area() != self.pixels.len() ||
             self.pixels.iter().flatten().any(|v| !v.is_finite())
         {
             return Err("Color region requires complete finite RGBA pixels".into());
@@ -136,6 +139,27 @@ impl RegionColorField {
                 bytes.push((channel.clamp(0.0, 1.0) * 255.0).round() as u8);
             }
         }
+        writer.write_image_data(&bytes).map_err(|e| e.to_string())
+    }
+}
+
+impl RegionColorField {
+    /// Largest-remainder RGBA8 splat quantization shared with the full-grid
+    /// exporter. Unlike RGB8, alpha contains a real material weight.
+    pub fn export_splat_rgba8(&self, path: &Path) -> Result<(), String> {
+        if self.kind != PortType::Splat || self.region.area() != self.pixels.len() {
+            return Err("Splat region requires complete typed RGBA weights".into());
+        }
+        let mut bytes = Vec::with_capacity(self.pixels.len() * 4);
+        for &pixel in &self.pixels {
+            bytes.extend_from_slice(&quantize_splat_pixel(pixel)?);
+        }
+        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file),
+            self.region.width as u32, self.region.height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
         writer.write_image_data(&bytes).map_err(|e| e.to_string())
     }
 }
@@ -166,9 +190,12 @@ fn supported_port(kind: &NodeKind, name: &str) -> Option<PortType> {
         (NodeKind::Curvature, "curvature") |
         (NodeKind::Aspect { .. }, "aspect") |
         (NodeKind::ElevationMask { .. }, "mask") |
-        (NodeKind::MaskLevels { .. }, "mask") => Some(PortType::Mask),
-        (NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. }, "color") =>
-            Some(PortType::Color),
+        (NodeKind::MaskLevels { .. }, "mask") |
+        (NodeKind::MaterialMasks { .. }, "sand" | "soil" | "rock" | "snow") =>
+            Some(PortType::Mask),
+        (NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. }, "color") |
+        (NodeKind::MaterialMasks { .. }, "albedo") => Some(PortType::Color),
+        (NodeKind::MaterialMasks { .. }, "splat") => Some(PortType::Splat),
         _ => None,
     }
 }
@@ -237,10 +264,11 @@ pub fn evaluate_color_region_cancellable(
 ) -> Result<(RegionColorField, RegionStats), String> {
     rect.validate(resolution)?;
     validate_region_graph(graph, source)?;
-    if supported_port(&graph.get(source.node)
-        .ok_or("Region color source missing")?.kind, &source.port) != Some(PortType::Color)
+    if !matches!(supported_port(&graph.get(source.node)
+        .ok_or("Region color source missing")?.kind, &source.port),
+        Some(PortType::Color | PortType::Splat))
     {
-        return Err("Requested output is not a supported Color port".into());
+        return Err("Requested output is not a supported Color/Splat port".into());
     }
     let mut stats = RegionStats::default();
     let field = evaluate_color(graph, resolution, source, rect, 0, &mut stats, &cancelled)?;
@@ -253,8 +281,10 @@ fn evaluate_color(
 ) -> Result<RegionColorField, String> {
     if cancelled() { return Err("Build cancelled".into()); }
     let node = graph.get(source.node).ok_or("Missing color node")?;
-    if supported_port(&node.kind, &source.port) != Some(PortType::Color) {
-        return Err(format!("Unsupported regional color output #{}:{}",
+    let kind = supported_port(&node.kind, &source.port)
+        .ok_or("Unsupported regional color output")?;
+    if !matches!(kind, PortType::Color | PortType::Splat) {
+        return Err(format!("Unsupported regional RGBA output #{}:{}",
             source.node, source.port));
     }
     stats.computed_regions += 1;
@@ -286,9 +316,95 @@ fn evaluate_color(
                 pixels.len()) * 4 + mask.values.len());
             pixels
         },
+        NodeKind::MaterialMasks { palette, .. } => {
+            let weights = material_region_weights(graph, size, node,
+                rect, retained, stats, cancelled)?;
+            if source.port == "splat" {
+                weights
+            } else {
+                let colors = palette.gpu_layers();
+                let mut pixels = Vec::with_capacity(rect.area());
+                for (i, w) in weights.iter().enumerate() {
+                    if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
+                    if w.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                        return Err("Material coverage must be finite and nonnegative".into());
+                    }
+                    let total: f32 = w.iter().sum();
+                    if total <= 0.0 {
+                        return Err("Material coverage must not be empty".into());
+                    }
+                    let mut pixel = [0.0, 0.0, 0.0, 1.0];
+                    for channel in 0..3 {
+                        pixel[channel] = (0..4)
+                            .map(|layer| colors[layer][channel] * w[layer])
+                            .sum::<f32>() / total;
+                    }
+                    pixels.push(pixel);
+                }
+                stats.observe(retained + (weights.len() + pixels.len()) * 4);
+                pixels
+            }
+        },
         other => return Err(format!("Unsupported regional color node: {}", other.label())),
     };
-    Ok(RegionColorField { region: rect, pixels })
+    Ok(RegionColorField { region: rect, kind, pixels })
+}
+
+/// Evaluate one MaterialMasks node using a one-sample height halo. It
+/// computes four weights together, but only for the requested world region.
+fn material_region_weights(
+    graph: &Graph, size: usize, node: &crate::terrain::Node,
+    rect: Region, retained: usize, stats: &mut RegionStats,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Vec<[f32; 4]>, String> {
+    let NodeKind::MaterialMasks {
+        sea_level, beach_width, rock_slope, rock_blend,
+        snowline, snow_blend, palette,
+    } = &node.kind else {
+        return Err("Material region requires a MaterialMasks node".into());
+    };
+    if !sea_level.is_finite() || !(0.0..=1.0).contains(sea_level) ||
+       !beach_width.is_finite() || !(0.001..=0.5).contains(beach_width) ||
+       !rock_slope.is_finite() || !(0.0..=1.0).contains(rock_slope) ||
+       !rock_blend.is_finite() || !(0.001..=0.5).contains(rock_blend) ||
+       !snowline.is_finite() || !(0.0..=2.0).contains(snowline) ||
+       !snow_blend.is_finite() || !(0.001..=0.5).contains(snow_blend)
+    {
+        return Err("Material masks require finite thresholds and positive blend widths".into());
+    }
+    // Full-grid evaluation materializes both masks and albedo regardless of
+    // selected port, so a bad palette must be rejected for every regional port.
+    if palette.colors.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("Material palette colors must be finite".into());
+    }
+    let halo = halo_rect(rect, size, 1);
+    let height = evaluate(graph, size, &node.inputs[0], halo,
+        retained, stats, cancelled)?;
+    if height.values.iter().any(|v| !v.is_finite()) {
+        return Err("Material masks require a finite heightfield".into());
+    }
+    let mut weights = Vec::with_capacity(rect.area());
+    let scale = (size - 1) as f32 * 0.25;
+    for y in rect.y..rect.y + rect.height {
+        if (y - rect.y) % 16 == 0 && cancelled() {
+            return Err("Build cancelled".into());
+        }
+        for x in rect.x..rect.x + rect.width {
+            let l = height.get(x.saturating_sub(1), y);
+            let r = height.get((x + 1).min(size - 1), y);
+            let u = height.get(x, y.saturating_sub(1));
+            let d = height.get(x, (y + 1).min(size - 1));
+            let dx = r - l;
+            let dy = d - u;
+            let slope = (dx * dx + dy * dy).sqrt() * scale;
+            let steepness = (slope / (1.0 + slope)).clamp(0.0, 1.0);
+            weights.push(material_weights_at(height.get(x, y), steepness,
+                *sea_level, *beach_width, *rock_slope, *rock_blend,
+                *snowline, *snow_blend));
+        }
+    }
+    stats.observe(retained + height.values.len() + weights.len() * 4);
+    Ok(weights)
 }
 
 fn halo_rect(rect: Region, size: usize, radius: usize) -> Region {
@@ -429,6 +545,17 @@ fn evaluate(graph: &Graph, size: usize, source: &PortRef, rect: Region,
                 values.push(if *invert { 1.0 - t } else { t });
             }
             stats.observe(retained + input.values.len() + values.len());
+        }
+        NodeKind::MaterialMasks { .. } => {
+            let weights = material_region_weights(graph, size, node,
+                rect, retained, stats, cancelled)?;
+            let channel = match source.port.as_str() {
+                "sand" => 0, "soil" => 1, "rock" => 2, "snow" => 3,
+                _ => return Err("Unknown material mask port".into()),
+            };
+            values.reserve_exact(rect.area());
+            for weight in &weights { values.push(weight[channel]); }
+            stats.observe(retained + weights.len() * 4 + values.len());
         }
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } => {
             // First-order 4-neighbor differential. Nested local operations
