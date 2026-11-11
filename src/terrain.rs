@@ -282,6 +282,43 @@ impl Graph {
         id
     }
 
+    /// Add a node after the user's selected graph port when the types match.
+    /// Incompatible selections use the existing safe default wiring, so
+    /// choosing a Mask while creating a height modifier never corrupts the graph.
+    pub fn add_from(&mut self, kind: NodeKind, selected: &PortRef) -> u64 {
+        let compatible = self.get(selected.node).is_some_and(|node| {
+            node.kind.output_ports().iter()
+                .any(|(name, ty)| *name == selected.port
+                    && Some(*ty) == kind.input_type(0))
+        });
+        let source_position = if compatible {
+            self.get(selected.node).map(|node| node.position)
+        } else {
+            None
+        };
+
+        let id = self.add(kind);
+        if compatible {
+            // The selected source existed before insertion: this cannot cycle.
+            self.connect(id, 0, selected.clone())
+                .expect("matching preexisting source must be connectable");
+        }
+        if let Some([x, y]) = source_position {
+            let mut target = [x + 235.0, y];
+            // Avoid placing new cards directly on top of prior cards.
+            while self.nodes.iter().any(|node| node.id != id &&
+                (node.position[0] - target[0]).abs() < 205.0 &&
+                (node.position[1] - target[1]).abs() < 104.0
+            ) {
+                target[1] += 112.0;
+            }
+            if let Some(node) = self.nodes.iter_mut().find(|node| node.id == id) {
+                node.position = target;
+            }
+        }
+        id
+    }
+
     /// Backwards-compatible heightfield-only entry point.
     pub fn evaluate(&self, resolution: usize) -> Result<HeightField, String> {
         let output = self.evaluate_port(resolution, &PortRef::height(self.output))?;
@@ -592,6 +629,51 @@ pub fn export_obj(field: &HeightField, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_creation_connects_selected_height_not_global_output() {
+        let mut project = Project::default();
+        let earlier = PortRef::height(1);
+        let id = project.graph.add_from(NodeKind::Blur { radius: 2 }, &earlier);
+        assert_eq!(project.graph.get(id).unwrap().inputs[0], earlier);
+        assert_eq!(project.graph.output, id);
+        assert!(project.graph.evaluate(32).is_ok());
+
+        let pos = project.graph.get(id).unwrap().position;
+        assert!(pos[0] > project.graph.get(1).unwrap().position[0]);
+        assert!(project.graph.nodes.iter().filter(|n| n.id != id).all(|other|
+            (other.position[0] - pos[0]).abs() >= 205.0 ||
+            (other.position[1] - pos[1]).abs() >= 104.0
+        ));
+    }
+
+    #[test]
+    fn context_creation_preserves_typed_mask_connections_and_fallbacks() {
+        let mut project = Project::default();
+        let slope = project.graph.add(NodeKind::Slope);
+        let slope_port = PortRef::new(slope, "slope");
+        let mask = project.graph.add_from(NodeKind::MaskLevels {
+            black: 0.0, white: 1.0, gamma: 1.0, invert: false
+        }, &slope_port);
+        assert_eq!(project.graph.get(mask).unwrap().inputs[0], slope_port);
+        assert!(project.graph.evaluate_port(32, &PortRef::new(mask, "mask")).is_ok());
+
+        let before_height = project.graph.output;
+        let height = project.graph.add_from(NodeKind::Terrace {
+            steps: 8, softness: 0.5
+        }, &slope_port);
+        assert_eq!(project.graph.get(height).unwrap().inputs[0],
+            PortRef::height(before_height));
+        assert!(project.graph.evaluate(32).is_ok());
+
+        let color = project.graph.add(NodeKind::Colorize {
+            low: [0.1, 0.2, 0.3], high: [0.8, 0.9, 1.0],
+            midpoint: 0.5, contrast: 1.0
+        });
+        let color_port = PortRef::new(color, "color");
+        let mixer = project.graph.add_from(NodeKind::ColorMixer { mix: 0.3 }, &color_port);
+        assert_eq!(project.graph.get(mixer).unwrap().inputs[0], color_port);
+    }
 
     #[test]
     fn default_project_is_deterministic() {
