@@ -6,7 +6,7 @@ use crate::drainage::drainage;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
-use crate::geology::{island, mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask};
+use crate::geology::{island, mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask, stratify};
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
@@ -344,7 +344,7 @@ impl NodeKind {
             (Self::Colorize { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -414,6 +414,9 @@ fn evaluate_kind(
         }
         NodeKind::Terrace { steps, softness } => NodeOutputs::default()
             .with("height", PortType::Height, terrace(take(0), *steps, *softness)),
+        NodeKind::Stratify { seed, spacing, intensity, warp, tilt, direction } =>
+            NodeOutputs::default().with("height", PortType::Height,
+                stratify(take(0), *seed, *spacing, *intensity, *warp, *tilt, *direction)),
         NodeKind::Blur { radius } => NodeOutputs::default()
             .with("height", PortType::Height, blur(take(0), *radius)),
         NodeKind::Blend { mix } => NodeOutputs::default()
@@ -514,6 +517,24 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn stratify_renders_in_graph_and_roundtrips_json() {
+        let mut p = Project::default();
+        let source = PortRef::height(1);
+        let id = p.graph.add_from(NodeKind::Stratify {
+            seed: 89, spacing: 0.075, intensity: 0.75,
+            warp: 0.4, tilt: 0.35, direction: 30.0,
+        }, &source);
+        assert_eq!(p.graph.get(id).unwrap().inputs[0], source);
+        let output = p.graph.evaluate_port(32, &PortRef::height(id)).unwrap();
+        assert_eq!(output.kind, PortType::Height);
+        assert!(output.data.values.iter().all(|v| v.is_finite() && *v >= 0.0));
+        let json = serde_json::to_string(&p).unwrap();
+        let again: Project = serde_json::from_str(&json).unwrap();
+        let roundtrip = again.graph.evaluate_port(32, &PortRef::height(id)).unwrap();
+        assert_eq!(output.data, roundtrip.data);
+    }
 
     #[test]
     fn color_nodes_use_actual_rgba_and_are_type_safe() {
