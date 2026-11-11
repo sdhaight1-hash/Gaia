@@ -4,7 +4,7 @@
 use crate::hydrology::simulate;
 use crate::import::read_heightmap;
 use std::path::Path;
-use crate::geology::{mountain_range, crater, dunes, canyon, warp, curvature, elevation_mask};
+use crate::geology::{mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask};
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
@@ -275,6 +275,7 @@ impl NodeKind {
         const HEIGHT: &[(&str, PortType)] = &[("height", PortType::Height)];
         const SLOPE: &[(&str, PortType)] = &[("slope", PortType::Mask)];
         const CURVATURE: &[(&str, PortType)] = &[("curvature", PortType::Mask)];
+        const ASPECT: &[(&str, PortType)] = &[("aspect", PortType::Mask)];
         const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const EROSION: &[(&str, PortType)] = &[
             ("height", PortType::Height),
@@ -294,6 +295,7 @@ impl NodeKind {
             Self::Hydraulic { .. } => HYDRAULIC,
             Self::Slope => SLOPE,
             Self::Curvature => CURVATURE,
+            Self::Aspect { .. } => ASPECT,
             Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
         }
@@ -307,7 +309,7 @@ impl NodeKind {
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::ElevationMask { .. } | Self::Warp { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -371,6 +373,9 @@ fn evaluate_kind(
             .with("slope", PortType::Mask, slope(take(0))),
         NodeKind::Curvature => NodeOutputs::default()
             .with("curvature", PortType::Mask, curvature(take(0))),
+        NodeKind::Aspect { azimuth, half_width, min_slope } => NodeOutputs::default()
+            .with("aspect", PortType::Mask,
+                aspect_mask(take(0), *azimuth, *half_width, *min_slope)),
         NodeKind::ElevationMask { low, high, feather } => NodeOutputs::default()
             .with("mask", PortType::Mask,
                 elevation_mask(take(0), *low, *high, *feather)),
@@ -429,6 +434,24 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn aspect_port_is_mask_and_connects_to_masked_blend() {
+        let mut project = Project::default();
+        let aspect_id = project.graph.add(NodeKind::Aspect {
+            azimuth: 270.0, half_width: 50.0, min_slope: 0.05,
+        });
+        let blend_id = project.graph.add(NodeKind::MaskedBlend { mix: 0.6 });
+        project.graph.connect(blend_id, 2, PortRef::new(aspect_id, "aspect")).unwrap();
+        let selected = project.graph.evaluate_port(32, &PortRef::new(aspect_id, "aspect")).unwrap();
+        assert_eq!(selected.kind, PortType::Mask);
+        assert!(selected.data.values.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        let output = project.graph.evaluate_port(32, &PortRef::height(blend_id)).unwrap();
+        assert_eq!(output.kind, PortType::Height);
+        assert!(output.data.values.iter().all(|v| v.is_finite()));
+        assert!(project.graph.connect(blend_id, 0, PortRef::new(aspect_id, "aspect"))
+            .unwrap_err().contains("Cannot connect"));
+    }
 
     #[test]
     fn imported_asset_content_invalidates_graph_cache() {
