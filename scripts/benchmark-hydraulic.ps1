@@ -91,7 +91,7 @@ for ($run=1;$run -le $Repeats;$run++) {
   }
   $hashes=@($pngs | ForEach-Object {
     $relative=[IO.Path]::GetRelativePath($folder,$_.FullName)
-    "$relative:$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+    "${relative}:$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
   })
   $identical=$true
   if ($null -eq $baseline) { $baseline=$hashes }
