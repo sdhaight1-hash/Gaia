@@ -29,6 +29,25 @@ cargo run --release
 
 Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
+## Project persistence (reliability)
+
+Opening a project now performs bounded **structural** validation (node count,
+output type, input count/types, missing sources, cycles, graph coordinates and
+missing imported heightmap files) without running costly generators or erosion
+on the UI thread. The existing cancellable graph worker builds the preview
+after the project is installed. A project with a structurally invalid graph
+remains rejected without replacing the active project.
+
+Saving writes and syncs a same-directory temporary file before atomically
+replacing the destination with \`tempfile::NamedTempFile::persist\`. Failed
+staging does not truncate the previous project. As with most normal filesystem
+operations, this is *not* a guaranteed power-loss durable transaction: the
+containing directory is not independently synced. An imported PNG's content
+may still fail decoding during the asynchronous first build (only its
+existence is checked on open).
+
+See \`src/terrain.rs\` persistence tests.
+
 ## Current workflow
 
 - Left **Node Library**: search by node name or description; add Mountain,

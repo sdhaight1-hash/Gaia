@@ -220,6 +220,10 @@ impl Graph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut Node> {
+        self.nodes.iter_mut().find(|n| n.id == id)
+    }
+
     /// Connect a named source output to a typed target input.
     /// Reject invalid ports, bad slots, self-links and cyclic dependencies
     /// before modifying the graph.
@@ -552,6 +556,75 @@ impl Graph {
         id
     }
 
+    /// Check graph topology, types and dependencies without evaluating any
+    /// terrain simulation. This lets Open return immediately; async worker
+    /// execution is responsible for actual generated terrain.
+    pub fn validate_structure(&self) -> Result<(), String> {
+        use crate::pipeline::PortType;
+        if self.nodes.is_empty() || self.nodes.len() > 256 {
+            return Err("Graph must contain 1–256 nodes".into());
+        }
+        let mut ids = std::collections::HashSet::new();
+        for node in &self.nodes {
+            if node.id == 0 || !ids.insert(node.id) {
+                return Err(format!("Duplicate or invalid node ID #{}", node.id));
+            }
+            if node.inputs.len() != node.kind.input_count() {
+                return Err(format!(
+                    "Node #{} has {} inputs, expected {}",
+                    node.id, node.inputs.len(), node.kind.input_count()));
+            }
+            if !node.position.iter().all(|v| v.is_finite()) {
+                return Err(format!("Node #{} has an invalid graph position", node.id));
+            }
+        }
+        if !self.get(self.output).is_some_and(|node|
+            node.kind.output_ports().iter().any(|(port, ty)|
+                *port == "height" && *ty == PortType::Height))
+        {
+            return Err("Project output is not a valid Height port".into());
+        }
+        for node in &self.nodes {
+            for (slot, input) in node.inputs.iter().enumerate() {
+                let source = self.get(input.node).ok_or_else(|| format!(
+                    "Node #{} references missing source #{}", node.id, input.node))?;
+                let actual = source.kind.output_ports().iter()
+                    .find(|(port, _)| *port == input.port)
+                    .map(|(_, ty)| *ty).ok_or_else(|| format!(
+                        "Node #{} references missing output #{}:{}",
+                        node.id, input.node, input.port))?;
+                if Some(actual) != node.kind.input_type(slot) {
+                    return Err(format!(
+                        "Type mismatch on node #{} input {} from #{}:{}",
+                        node.id, slot, input.node, input.port));
+                }
+            }
+        }
+        // Kahn-style traversal from every node, including disconnected
+        // branches: their cycles must not enter a saved project unnoticed.
+        let mut state = std::collections::HashMap::<u64, u8>::new();
+        fn visit(id: u64, graph: &Graph,
+            state: &mut std::collections::HashMap<u64, u8>,
+        ) -> Result<(), String> {
+            match state.get(&id) {
+                Some(1) => return Err(format!("Graph cycle detected at node #{id}")),
+                Some(2) => return Ok(()),
+                _ => {}
+            }
+            state.insert(id, 1);
+            let node = graph.get(id).ok_or_else(|| format!("Missing node #{id}"))?;
+            for input in &node.inputs {
+                visit(input.node, graph, state)?;
+            }
+            state.insert(id, 2);
+            Ok(())
+        }
+        for node in &self.nodes {
+            visit(node.id, self, &mut state)?;
+        }
+        Ok(())
+    }
+
     /// Backwards-compatible heightfield-only entry point.
     pub fn evaluate(&self, resolution: usize) -> Result<HeightField, String> {
         let output = self.evaluate_port(resolution, &PortRef::height(self.output))?;
@@ -608,8 +681,19 @@ impl Project {
                 *asset = on_disk.to_string_lossy().into_owned();
             }
         }
-        let data = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
-        std::fs::write(path, data).map_err(|e| e.to_string())
+        let data = serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?;
+        // Keep the previous file intact if serialization, writing or syncing
+        // fails. Temporary file is on the same filesystem as destination.
+        use std::io::Write as _;
+        let mut staged = tempfile::NamedTempFile::new_in(&directory)
+            .map_err(|e| format!("Cannot stage project save: {e}"))?;
+        staged.write_all(&data)
+            .map_err(|e| format!("Cannot write staged project: {e}"))?;
+        staged.as_file().sync_all()
+            .map_err(|e| format!("Cannot sync staged project: {e}"))?;
+        staged.persist(path)
+            .map_err(|e| format!("Cannot replace project file: {}", e.error))?;
+        Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -630,7 +714,19 @@ impl Project {
                     .to_string_lossy().into_owned();
             }
         }
-        project.graph.evaluate(project.resolution)?;
+        if !(32..=crate::pipeline::MAX_BUILD_RESOLUTION).contains(&project.resolution) {
+            return Err("Project resolution must be 32–2048".into());
+        }
+        project.graph.validate_structure()?;
+        // Validate referenced asset existence without decoding entire PNGs
+        // and without running erosion or another expensive graph operation.
+        for node in &project.graph.nodes {
+            if let NodeKind::ImportHeight { path, .. } = &node.kind {
+                if !Path::new(path).is_file() {
+                    return Err(format!("Imported heightmap does not exist: {path}"));
+                }
+            }
+        }
         Ok(project)
     }
 }
@@ -1265,6 +1361,46 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let restored: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.graph.evaluate(32).unwrap(), p.graph.evaluate(32).unwrap());
+    }
+
+    #[test]
+    fn project_structure_load_checks_all_references_without_running_terrain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.gaia.json");
+        let mut p = Project::default();
+        p.graph.get_mut(2).unwrap().inputs[0] = PortRef::height(99);
+        std::fs::write(&path, serde_json::to_vec(&p).unwrap()).unwrap();
+        assert!(Project::load(&path).unwrap_err().contains("missing source"));
+        p.graph.get_mut(2).unwrap().inputs[0] = PortRef::height(1);
+        p.graph.get_mut(1).unwrap().inputs = vec![PortRef::height(2)];
+        assert!(p.graph.validate_structure().unwrap_err().contains("inputs"));
+        p.graph.get_mut(1).unwrap().inputs.clear();
+        p.graph.get_mut(2).unwrap().inputs[0] = PortRef::height(3);
+        assert!(p.graph.validate_structure().unwrap_err().contains("cycle"));
+        p.graph.get_mut(2).unwrap().inputs[0] = PortRef::height(1);
+        p.resolution = 64;
+        p.save(&path).unwrap();
+        let loaded = Project::load(&path).unwrap();
+        assert_eq!(loaded.resolution, 64);
+        assert_eq!(loaded.graph.output, p.graph.output);
+    }
+
+    #[test]
+    fn staged_project_save_preserves_original_on_failure_and_replaces_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("terrain.gaia.json");
+        let mut project = Project::default();
+        project.save(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let missing_dir = dir.path().join("missing");
+        assert!(project.save(&missing_dir.join("terrain.gaia.json")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        project.resolution = 256;
+        project.save(&path).unwrap();
+        assert_ne!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(Project::load(&path).unwrap().resolution, 256);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1,
+            "no leftover staged files");
     }
 
     #[test]
