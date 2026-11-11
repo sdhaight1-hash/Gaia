@@ -8,7 +8,7 @@ pub const CARD_WIDTH: f32 = 194.0;
 pub const PORT_START: f32 = 56.0;
 pub const PORT_STEP: f32 = 22.0;
 // Allow a meaningful entire-graph overview even for 50–100 node layouts.
-pub const MIN_ZOOM: f32 = 0.06;
+pub const MIN_ZOOM: f32 = 0.02;
 pub const MAX_ZOOM: f32 = 2.25;
 
 pub fn card_height(node: &Node) -> f32 {

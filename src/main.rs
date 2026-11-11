@@ -1338,7 +1338,8 @@ impl GaiaApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 5.0, ui_theme::CANVAS);
         let grid = egui::Stroke::new(0.65, egui::Color32::from_rgb(29, 37, 43));
-        let step = 28.0 * view.zoom;
+        // Keep the overview grid sparse enough at large zoom-outs.
+        let step = (28.0 * view.zoom).max(18.0);
         let offset_x = (view.pan.x.rem_euclid(step)).max(0.0);
         let offset_y = (view.pan.y.rem_euclid(step)).max(0.0);
         let mut x = rect.left() + offset_x;
@@ -1354,6 +1355,9 @@ impl GaiaApp {
             y += step;
         }
 
+        // At an overview zoom, draw simplified colored node blocks rather
+        // than hundreds of unreadable 1-pixel wires and socket handles.
+        if view.zoom >= 0.20 {
         // Draw existing connections behind every card. The cable color
         // identifies the source type; routing uses smooth Bezier curves.
         for node in &old_nodes {
@@ -1385,6 +1389,7 @@ impl GaiaApp {
             });
         }
 
+        }
         let mut pending_connection: Option<(u64, usize, PortRef)> = None;
         let mut requested_preview = None;
         let mut requested_delete = None;
@@ -1399,6 +1404,11 @@ impl GaiaApp {
         let can_move = !space && !middle;
         for node in &mut self.project.graph.nodes {
             let node_rect = view.node_rect(rect, node);
+            if view.zoom < 0.20 {
+                painter.rect_filled(node_rect.expand(1.0), 1.0,
+                    node_accent(&node.kind));
+                continue;
+            }
             // Only the title bar drags nodes. A whole-card drag target
             // competed with port handles, causing attempted cable drags to
             // move cards instead of beginning a connection.
