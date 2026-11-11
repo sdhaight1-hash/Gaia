@@ -13,25 +13,31 @@ pub fn read_heightmap(path: &Path, target_size: usize, scale: f32) -> Result<Hei
     let file = File::open(path).map_err(|e| format!("Heightmap {}: {e}", path.display()))?;
     let decoder = png::Decoder::new(std::io::BufReader::new(file));
     let mut reader = decoder.read_info().map_err(|e| format!("PNG header: {e}"))?;
-    let mut bytes = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut bytes).map_err(|e| format!("PNG data: {e}"))?;
-    if info.color_type != png::ColorType::Grayscale {
+    // Validate header metadata BEFORE asking the decoder for a potentially
+    // massive decompressed output buffer.
+    let header = reader.info();
+    if header.color_type != png::ColorType::Grayscale {
         return Err("Heightmap import currently accepts grayscale PNG only".into());
     }
-    if info.bit_depth != png::BitDepth::Eight && info.bit_depth != png::BitDepth::Sixteen {
+    if header.bit_depth != png::BitDepth::Eight && header.bit_depth != png::BitDepth::Sixteen {
         return Err("Heightmap import requires 8-bit or 16-bit grayscale PNG".into());
     }
-    let width = info.width as usize;
-    let height = info.height as usize;
+    let width = header.width as usize;
+    let height = header.height as usize;
     if width < 2 || height < 2 || width > 8192 || height > 8192 {
         return Err("Heightmap dimensions must be within 2–8192 on each axis".into());
     }
-    let bytes_per_pixel = if info.bit_depth == png::BitDepth::Sixteen { 2 } else { 1 };
+    let bytes_per_pixel = if header.bit_depth == png::BitDepth::Sixteen { 2 } else { 1 };
     let len = width.checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
         .ok_or("Heightmap dimensions overflow")?;
-    if info.buffer_size() != len {
+    if reader.output_buffer_size() != len {
         return Err("Heightmap pixel layout does not match grayscale dimensions".into());
+    }
+    let mut bytes = vec![0; len];
+    let info = reader.next_frame(&mut bytes).map_err(|e| format!("PNG data: {e}"))?;
+    if info.buffer_size() != len {
+        return Err("Heightmap decoded layout does not match grayscale dimensions".into());
     }
     let values: Vec<f32> = if bytes_per_pixel == 2 {
         bytes[..len].chunks_exact(2).map(|pair| {
@@ -96,6 +102,25 @@ mod tests {
         assert_eq!(imported.size, 64);
         assert!(imported.get(0, 0) <= 1e-5);
         assert!((imported.get(63, 0) - 0.5).abs() < 1e-4);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_excessive_dimensions_before_decoding_pixels() {
+        let path = std::env::temp_dir().join(format!(
+            "gaia-oversized-{}-{}.png", std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let file = File::create(&path).unwrap();
+        let mut encoder = png::Encoder::new(file, 8193, 2);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&vec![0_u8; 8193 * 2]).unwrap();
+        drop(writer);
+        let error = read_heightmap(&path, 32, 1.0).unwrap_err();
+        assert!(error.contains("dimensions"), "{error}");
         std::fs::remove_file(path).unwrap();
     }
 
