@@ -201,9 +201,9 @@ See \`src/terrain.rs\` persistence tests.
   with CPU fallback when no GPU device was supplied. GPU numerical
   verification on a target machine is still required.
 
-## Bounded-memory regional terrain builds (Height, Mask and RGB Color)
+## Bounded-memory regional terrain builds (Height, Mask, Color and Splat)
 
-For selected **local Height, Mask and Color graphs** Gaia can evaluate exact world-grid
+For selected **local Height, Mask, Color and Splat graphs** Gaia can evaluate exact world-grid
 regions directly, rather than calculating and retaining an entire heightfield
 and then subdividing it:
 
@@ -229,6 +229,17 @@ actual output node in your saved graph. Color regions are RGB8 PNG, not
 grayscale previews; they use the same per-pixel math as full-grid Colorize
 and Color Mixer.
 
+To export the **Material Masks** node's normalized RGBA splat weights:
+
+```powershell
+cargo run --release --bin gaia-build -- --project terrain.gaia.json --port 15:splat --output builds/material-splat --resolution 4096 --region-tiles 8 --no-obj
+```
+
+The Material Masks node also exposes `sand`, `soil`, `rock`, `snow`
+as PNG16 region masks, and `albedo` as RGB8 regions. Use the actual node
+ID in your project. Material painting and fully authored PBR layers are not
+part of this restricted regional evaluator.
+
 Region builds preflight the requested port **and** its connected ancestors.
 An unavailable port or incompatible global operation fails explicitly; the
 command does not substitute a height output or allocate a full-grid fallback.
@@ -245,15 +256,19 @@ widths can differ by one sample when the world intervals do not divide evenly.
 **Supported ancestor nodes:** Mountain, Noise, Adjust (autolevel off), Blur
 (with exact clipped input halos, including nested blurs), Blend, Slope and
 Curvature and Aspect (one-sample halos), Elevation Mask, Mask Levels,
-Masked Blend using a typed Mask input, Colorize and Color Mixer with a typed
-Mask input. Region outputs can be Height or Mask as grayscale PNG16, or Color
-as RGB8 (with real RGB channels). The report and manifest retain the output
-type and format; Color reports summarize a Rec.709 luminance proxy.
+Masked Blend using a typed Mask input, Colorize, Color Mixer with a typed
+Mask input, and Material Masks (sand, soil, rock, snow, albedo and splat).
+The material classifier requests one-sample height halos to compute slope
+at world-region boundaries. Region outputs can be Height/Mask as grayscale
+PNG16, Color/albedo as RGB8, or four-way material Splat as RGBA8. Each
+quantized splat pixel totals 255 across its four channels. The report and
+manifest retain the output type and format; Color reports summarize Rec.709
+luminance and Splat reports summarize RGB-weighted values (alpha omitted).
 A disconnected unrelated node need not be region-compatible. Other nodes,
 including hydraulic/thermal erosion, autolevel, materials and global drainage,
 fail with a clear error **before** writing output; they are not evaluated
 with a hidden full-world fallback. There is deliberately no stitched whole
-PNG, OBJ mesh, Splat weights / normal maps, batch export or GUI region job in this phase.
+PNG, OBJ mesh, normal maps, batch export or GUI region job in this phase.
 Use ordinary `--tiles` when you need the legacy export-only
 subdivision of an already built global graph. Peak memory in the region
 report covers live intermediate float samples; it excludes PNG encoding and
