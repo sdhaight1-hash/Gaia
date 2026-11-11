@@ -482,12 +482,13 @@ mod tests {
         let mut tiled = disk_state(&h, &w, &s);
         let mut reversed = grid(32, 5, 3);
         reversed.reverse();
+        let alternate = grid(32, 3, 7);
         let mut out = MassLedger::default();
         for tick in 0..24 {
             let edge = if tick % 2 == 0 { WorldEdge::Open } else { WorldEdge::Closed };
             let baseline = stripe.step_eroding(7, edge, params, || false).unwrap();
             let tiled_ledger = tiled.step_eroding_tiles(
-                if tick % 2 == 0 { &reversed } else { &grid(32, 3, 7) },
+                if tick % 2 == 0 { &reversed } else { &alternate },
                 edge, params, || false,
             ).unwrap();
             out.water_outflow += tiled_ledger.water_outflow;
