@@ -45,6 +45,27 @@ fn graph_canvas_extent(nodes: &[Node], viewport_width: f32) -> egui::Vec2 {
     egui::vec2(width, height)
 }
 
+/// Explicitly build a second, genuinely different Color input for a mixer.
+/// Previously, new mixers often received the same Colorize port twice, so
+/// changing the Mix slider was mathematically guaranteed to do nothing.
+fn add_contrasting_colorize(project: &mut Project, mixer_id: u64) -> Result<u64, String> {
+    let mixer = project.graph.get(mixer_id)
+        .ok_or_else(|| format!("Unknown node #{mixer_id}"))?;
+    if !matches!(mixer.kind, NodeKind::ColorMixer { .. })
+        || mixer.inputs.len() < 2 || mixer.inputs[0] != mixer.inputs[1]
+    {
+        return Err("Only a Color Mixer using the same source twice needs a second palette".into());
+    }
+    let id = project.graph.add(NodeKind::Colorize {
+        low: [0.28, 0.27, 0.26],
+        high: [0.88, 0.84, 0.78],
+        midpoint: 0.5,
+        contrast: 1.0,
+    });
+    project.graph.connect(mixer_id, 1, PortRef::new(id, "color"))?;
+    Ok(id)
+}
+
 struct GaiaApp {
     project: Project,
     field: HeightField,
@@ -480,6 +501,7 @@ impl GaiaApp {
         let mut set_output = false;
         let mut requested_connection: Option<(u64, usize, PortRef)> = None;
         let mut requested_delete = false;
+        let mut requested_secondary_color = false;
         if let Some(node) = self.project.graph.nodes.iter_mut().find(|n| n.id == self.selected) {
             ui.label(egui::RichText::new(node.kind.label()).size(18.0)
                 .strong().color(ui_theme::ACCENT));
@@ -565,7 +587,7 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(iterations, 0..=120).text("Iterations")).changed();
                     changed |= ui.add(egui::Slider::new(talus, 0.0..=0.1).text("Talus")).changed();
                     changed |= ui.add(egui::Slider::new(strength, 0.0..=0.5).text("Transfer")).changed();
-                    ui.small("Finite-volume thermal erosion; hydraulic erosion is not yet implemented.");
+                    ui.small("Conservative thermal talus transport; separate hydraulic erosion is available.");
                 }
                 NodeKind::Hydraulic { params } => {
                     changed |= ui.add(egui::Slider::new(&mut params.iterations, 0..=200)
@@ -595,6 +617,15 @@ impl GaiaApp {
                 NodeKind::ColorMixer { mix } => {
                     changed |= ui.add(egui::Slider::new(mix, 0.0..=1.0).text("Mix")).changed();
                     ui.small("Requires two Color ports and a Mask port.");
+                    if node.inputs.len() >= 2 && node.inputs[0] == node.inputs[1] {
+                        ui.colored_label(ui_theme::AMBER,
+                            "Both Color inputs are identical. Mix has no visible effect.");
+                        if ui.button("Create contrasting palette").on_hover_text(
+                            "Create a second Colorize node and connect it to Input 2"
+                        ).clicked() {
+                            requested_secondary_color = true;
+                        }
+                    }
                 }
                 NodeKind::Colorize { low, high, midpoint, contrast } => {
                     ui.horizontal(|ui| {
@@ -666,6 +697,15 @@ impl GaiaApp {
             match self.project.graph.connect(target, slot, source) {
                 Ok(()) => changed = true,
                 Err(error) => self.status = format!("Connection rejected: {error}"),
+            }
+        }
+        if requested_secondary_color {
+            match add_contrasting_colorize(&mut self.project, self.selected) {
+                Ok(id) => {
+                    changed = true;
+                    self.status = format!("Created Colorize #{id} and connected Color Mixer Input 2");
+                }
+                Err(error) => self.status = format!("Color setup failed: {error}"),
             }
         }
         if set_output {
@@ -1194,6 +1234,30 @@ mod file_drop_tests {
         assert_eq!(classify_drop(Path::new("WORLD.GAIA.JSON")), DroppedDocument::Project);
         assert_eq!(classify_drop(Path::new("world.json")), DroppedDocument::Unsupported);
         assert_eq!(classify_drop(Path::new("photo.jpeg")), DroppedDocument::Unsupported);
+    }
+
+    #[test]
+    fn duplicate_color_mixer_can_create_distinct_secondary_source() {
+        let mut project = Project::default();
+        let first = project.graph.add(NodeKind::Colorize {
+            low: [0.1, 0.2, 0.3], high: [0.8, 0.8, 0.7],
+            midpoint: 0.5, contrast: 1.0,
+        });
+        let mixer = project.graph.add(NodeKind::ColorMixer { mix: 0.7 });
+        assert_eq!(project.graph.get(mixer).unwrap().inputs[0],
+            PortRef::new(first, "color"));
+        assert_eq!(project.graph.get(mixer).unwrap().inputs[0],
+            project.graph.get(mixer).unwrap().inputs[1]);
+
+        let second = add_contrasting_colorize(&mut project, mixer).unwrap();
+        let inputs = &project.graph.get(mixer).unwrap().inputs;
+        assert_eq!(inputs[1], PortRef::new(second, "color"));
+        assert_ne!(inputs[0], inputs[1]);
+        assert!(add_contrasting_colorize(&mut project, mixer).is_err());
+
+        let value = project.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap();
+        assert_eq!(value.kind, PortType::Color);
+        assert_eq!(value.color.as_ref().unwrap().pixels.len(), 32 * 32);
     }
 
     #[test]
