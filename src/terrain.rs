@@ -771,33 +771,45 @@ pub(crate) fn fractal(x: f32, y: f32, seed: u32, frequency: f32) -> f32 {
     sum / norm
 }
 
+pub(crate) fn sample_noise(
+    size: usize, x: usize, y: usize, seed: u32, frequency: f32, amplitude: f32,
+) -> f32 {
+    let u = x as f32 / (size - 1) as f32;
+    let v = y as f32 / (size - 1) as f32;
+    fractal(u, v, seed, frequency) * amplitude.clamp(0.0, 4.0)
+}
+
 pub(crate) fn generate_noise(size: usize, seed: u32, frequency: f32, amplitude: f32) -> HeightField {
     let mut out = HeightField::flat(size, 0.0);
     for y in 0..size {
         for x in 0..size {
-            let u = x as f32 / (size - 1) as f32;
-            let v = y as f32 / (size - 1) as f32;
-            out.values[y * size + x] = fractal(u, v, seed, frequency) * amplitude.clamp(0.0, 4.0);
+            out.values[y * size + x] = sample_noise(size, x, y, seed, frequency, amplitude);
         }
     }
     out
+}
+
+pub(crate) fn sample_mountain(
+    size: usize, x: usize, y: usize, seed: u32, frequency: f32, height: f32,
+) -> f32 {
+    let u = x as f32 / (size - 1) as f32;
+    let v = y as f32 / (size - 1) as f32;
+    let warp = fractal(u, v, seed.wrapping_add(19), 2.2) - 0.5;
+    let dx = u - 0.5 + warp * 0.16;
+    let dy = v - 0.5 - warp * 0.12;
+    let distance = (dx * dx + dy * dy).sqrt();
+    let footprint = (1.0 - distance * 1.85).max(0.0).powf(1.4);
+    let n = fractal(u, v, seed, frequency);
+    // Ridged multi-scale detail over a mountainous radial envelope.
+    let ridges = (1.0 - (2.0 * n - 1.0).abs()).powf(2.2);
+    footprint * (0.27 + 0.73 * ridges) * height.clamp(0.0, 4.0)
 }
 
 pub(crate) fn generate_mountain(size: usize, seed: u32, frequency: f32, height: f32) -> HeightField {
     let mut out = HeightField::flat(size, 0.0);
     for y in 0..size {
         for x in 0..size {
-            let u = x as f32 / (size - 1) as f32;
-            let v = y as f32 / (size - 1) as f32;
-            let warp = fractal(u, v, seed.wrapping_add(19), 2.2) - 0.5;
-            let dx = u - 0.5 + warp * 0.16;
-            let dy = v - 0.5 - warp * 0.12;
-            let distance = (dx * dx + dy * dy).sqrt();
-            let footprint = (1.0 - distance * 1.85).max(0.0).powf(1.4);
-            let n = fractal(u, v, seed, frequency);
-            // Ridged multi-scale detail over a mountainous radial envelope.
-            let ridges = (1.0 - (2.0 * n - 1.0).abs()).powf(2.2);
-            out.values[y * size + x] = footprint * (0.27 + 0.73 * ridges) * height.clamp(0.0, 4.0);
+            out.values[y * size + x] = sample_mountain(size, x, y, seed, frequency, height);
         }
     }
     out
