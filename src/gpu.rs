@@ -71,19 +71,53 @@ pub fn sun_uniform(azimuth: f32, elevation: f32, intensity: f32) -> [f32; 4] {
     ]
 }
 
-pub fn eye_position(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
-    Vec3::new(
-        yaw.cos() * pitch.cos(),
-        pitch.sin(),
-        yaw.sin() * pitch.cos(),
-    ) * distance + Vec3::new(0.0, 0.2, 0.0)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CameraProjection {
+    Perspective,
+    Orthographic,
 }
 
-pub fn view_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> [f32; 16] {
-    let eye = eye_position(yaw, pitch, distance);
-    let view = Mat4::look_at_rh(eye, Vec3::new(0.0, 0.2, 0.0), Vec3::Y);
-    let proj = Mat4::perspective_rh(45_f32.to_radians(), aspect.max(0.1), 0.01, 100.0);
+pub const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0.0, 0.2, 0.0);
+
+fn orbit_vector(yaw: f32, pitch: f32) -> Vec3 {
+    Vec3::new(yaw.cos() * pitch.cos(), pitch.sin(), yaw.sin() * pitch.cos())
+}
+
+pub fn eye_position(yaw: f32, pitch: f32, distance: f32, target: Vec3) -> Vec3 {
+    orbit_vector(yaw, pitch) * distance + target
+}
+
+pub fn view_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32,
+    target: Vec3, projection: CameraProjection,
+) -> [f32; 16] {
+    let eye = eye_position(yaw, pitch, distance, target);
+    let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+    let aspect = aspect.max(0.1);
+    let proj = match projection {
+        CameraProjection::Perspective =>
+            Mat4::perspective_rh(45_f32.to_radians(), aspect, 0.01, 100.0),
+        CameraProjection::Orthographic => {
+            // Match the perspective framing at the orbit target distance.
+            let half_height = distance * (45.0_f32.to_radians() * 0.5).tan();
+            Mat4::orthographic_rh(-half_height * aspect, half_height * aspect,
+                -half_height, half_height, 0.01, 100.0)
+        }
+    };
     (proj * view).to_cols_array()
+}
+
+/// Convert a viewport drag into world-space displacement of the camera pivot.
+/// Pan stays in the view plane; the projection modes share the same target scale.
+pub fn pan_delta(yaw: f32, pitch: f32, distance: f32,
+    viewport_height: f32, drag_pixels: [f32; 2],
+) -> Vec3 {
+    let away = orbit_vector(yaw, pitch);
+    let right = Vec3::Y.cross(away).normalize();
+    let up = away.cross(right).normalize();
+    let units_per_pixel = 2.0 * distance * (45.0_f32.to_radians() * 0.5).tan()
+        / viewport_height.max(1.0);
+    -right * drag_pixels[0] * units_per_pixel
+        + up * drag_pixels[1] * units_per_pixel
 }
 
 /// Smooth default material preview. Height thresholds must not form
@@ -639,6 +673,35 @@ mod tests {
         ).validate(&module).expect("WGSL shader must validate");
         assert_eq!(std::mem::size_of::<CameraUniform>(), 176);
         assert_eq!(std::mem::size_of::<Vertex>(), 52);
+    }
+
+    #[test]
+    fn camera_pan_moves_parallel_to_view_and_preserves_orbit_distance() {
+        let yaw = 0.85;
+        let pitch = 0.72;
+        let delta = pan_delta(yaw, pitch, 3.7, 720.0, [135.0, -60.0]);
+        let facing = orbit_vector(yaw, pitch);
+        assert!(delta.length() > 0.001);
+        assert!(delta.dot(facing).abs() < 1.0e-5,
+            "panning must not dolly toward the terrain");
+        let target = DEFAULT_CAMERA_TARGET + delta;
+        assert!((eye_position(yaw, pitch, 3.7, target) - target).length() - 3.7 < 1.0e-5);
+        assert_eq!(pan_delta(yaw, pitch, 3.7, 720.0, [0.0, 0.0]), Vec3::ZERO);
+    }
+
+    #[test]
+    fn perspective_and_ortho_preserve_the_camera_pivot_at_center() {
+        let target = DEFAULT_CAMERA_TARGET + Vec3::new(0.6, 0.15, -0.4);
+        for projection in [CameraProjection::Perspective, CameraProjection::Orthographic] {
+            for aspect in [0.5, 1.0, 2.0] {
+                let matrix = Mat4::from_cols_array(&view_matrix(
+                    0.85, 0.72, 3.7, aspect, target, projection));
+                let center = matrix.project_point3(target);
+                assert!(center.is_finite());
+                assert!(center.x.abs() < 1.0e-5);
+                assert!(center.y.abs() < 1.0e-5);
+            }
+        }
     }
 
     #[test]
