@@ -181,9 +181,12 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
     if cancelled() { return Err("Build cancelled".into()); }
     let node = graph.get(id).ok_or_else(|| format!("Missing node #{id}"))?;
     stats.computed_regions += 1;
-    let mut values = Vec::with_capacity(rect.area());
+    // Allocate the output only after dependent regions finish; otherwise
+    // reserved but empty parent buffers inflate RSS and evade sample accounting.
+    let mut values = Vec::new();
     match &node.kind {
         NodeKind::Noise { seed, frequency, amplitude } => {
+            values.reserve_exact(rect.area());
             for y in rect.y..rect.y + rect.height {
                 if (y - rect.y) % 16 == 0 && cancelled() {
                     return Err("Build cancelled".into());
@@ -195,6 +198,7 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
             stats.observe(retained + values.len());
         }
         NodeKind::Mountain { seed, frequency, height } => {
+            values.reserve_exact(rect.area());
             for y in rect.y..rect.y + rect.height {
                 if (y - rect.y) % 16 == 0 && cancelled() {
                     return Err("Build cancelled".into());
@@ -218,6 +222,7 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
             }
             let input = evaluate(graph, size, node.inputs[0].node, rect, retained, stats, cancelled)?;
             let exp = 2.0_f32.powf(-2.0 * shaper);
+            values.reserve_exact(rect.area());
             for (i, &value) in input.values.iter().enumerate() {
                 if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
                 if !value.is_finite() || value < 0.0 {
@@ -235,6 +240,7 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
             let right = evaluate(graph, size, node.inputs[1].node, rect,
                 retained + left.values.len(), stats, cancelled)?;
             let influence = mix.clamp(0.0, 1.0);
+            values.reserve_exact(rect.area());
             for i in 0..rect.area() {
                 if i % 4096 == 0 && cancelled() { return Err("Build cancelled".into()); }
                 values.push(left.values[i] * (1.0 - influence) + right.values[i] * influence);
@@ -251,6 +257,7 @@ fn evaluate(graph: &Graph, size: usize, id: u64, rect: Region,
                 height: (rect.y + rect.height + radius).min(size) - y,
             };
             let input = evaluate(graph, size, node.inputs[0].node, halo, retained, stats, cancelled)?;
+            values.reserve_exact(rect.area());
             for gy in rect.y..rect.y + rect.height {
                 if (gy - rect.y) % 16 == 0 && cancelled() {
                     return Err("Build cancelled".into());
