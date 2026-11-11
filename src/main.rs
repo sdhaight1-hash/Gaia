@@ -359,7 +359,8 @@ impl GaiaApp {
             NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. }
             | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. }
             | NodeKind::MaskLevels { .. } | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. }
-            | NodeKind::Normals { .. });
+            | NodeKind::Normals { .. } | NodeKind::AmbientOcclusion { .. }
+            | NodeKind::Sunlight { .. });
         let source = self.preview_source.clone();
         self.selected = self.project.graph.add_from(kind, &source);
         self.focus_graph_selection = true;
@@ -448,6 +449,12 @@ impl GaiaApp {
             NodeKind::Slope);
         self.palette_node(ui, "◌  Curvature", "Local ridges and concave bowls",
             NodeKind::Curvature);
+        self.palette_node(ui, "◐  Ambient Occlusion",
+            "Directional horizon sampling for a terrain occlusion mask",
+            NodeKind::AmbientOcclusion { radius: 12, strength: 0.8 });
+        self.palette_node(ui, "☼  Sunlight",
+            "Compass-facing Lambert lighting with terrain cast shadows",
+            NodeKind::Sunlight { azimuth: 45.0, elevation: 38.0, distance: 24 });
         self.palette_node(ui, "◐  Aspect Mask", "Select slopes facing a compass direction",
             NodeKind::Aspect { azimuth: 0.0, half_width: 65.0, min_slope: 0.02 });
         self.palette_node(ui, "⌁  Drainage", "Derive upstream drainage and channel masks",
@@ -810,6 +817,22 @@ impl GaiaApp {
                 }
                 NodeKind::Curvature => {
                     ui.label("Curvature mask: dark ridges, bright bowls, midgray flat terrain.");
+                }
+                NodeKind::AmbientOcclusion { radius, strength } => {
+                    changed |= ui.add(egui::Slider::new(radius, 1..=64)
+                        .text("Horizon radius")).changed();
+                    changed |= ui.add(egui::Slider::new(strength, 0.0..=1.0)
+                        .text("Occlusion strength")).changed();
+                    ui.small("Eight horizon directions. White = exposed; dark = occluded.");
+                }
+                NodeKind::Sunlight { azimuth, elevation, distance } => {
+                    changed |= ui.add(egui::Slider::new(azimuth, 0.0..=360.0)
+                        .text("Sun azimuth")).changed();
+                    changed |= ui.add(egui::Slider::new(elevation, 1.0..=89.0)
+                        .text("Sun elevation")).changed();
+                    changed |= ui.add(egui::Slider::new(distance, 1..=128)
+                        .text("Shadow reach")).changed();
+                    ui.small("0° North, 90° East. Diffuse lighting plus terrain self-shadow mask.");
                 }
                 NodeKind::Aspect { azimuth, half_width, min_slope } => {
                     changed |= ui.add(egui::Slider::new(azimuth, 0.0..=360.0)
@@ -1406,7 +1429,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Sea { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
-        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::AmbientOcclusion { .. } | NodeKind::Sunlight { .. } | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
 }
 
