@@ -1,14 +1,15 @@
 //! Standalone deterministic terrain build tool.
 //! No window or GPU required; intended for production pipelines and CI.
-use gaia::pipeline::{PortRef, PortType};
+use gaia::pipeline::{GraphCache, PortRef, PortType};
 use gaia::color::export_rgb8;
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use gaia::terrain::{export_obj, export_png16, Project};
 use serde_json::json;
-use std::{env, path::PathBuf, process, time::Instant};
+use std::{env, path::{Path, PathBuf}, process, time::Instant};
 
 const HELP: &str = r#"Gaia headless terrain builder
 Usage: gaia-build --project FILE --output STEM [--resolution N] [--port NODE:PORT] [--no-obj] [--tiles COUNT]
+       gaia-build --project FILE --output STEM --all-outputs NODE [--resolution N] [--no-obj] [--tiles COUNT]
        gaia-build --demo --output STEM [--resolution N] [--no-obj] [--tiles COUNT]
 
 Examples:
@@ -16,11 +17,14 @@ Examples:
   gaia-build --project terrain.gaia.json --output builds/wear --port 2:wear --no-obj
   gaia-build --demo --output builds/sample --resolution 256
   gaia-build --project terrain.gaia.json --output builds/land --tiles 4
+  gaia-build --project terrain.gaia.json --output builds/erosion --all-outputs 2
 
 Exports PNG16 for scalar fields, RGB8 for Color fields, and OBJ for height outputs.
 Writes STEM.report.json. --tiles produces N×N PNGs in STEM.tiles/ plus
 STEM.tiles.json, each tile sharing one identical border pixel with neighbors.
 This subdivides an already-built field; it does not reduce graph build memory.
+--all-outputs NODE exports every named output of a node using one shared
+evaluation cache and writes STEM.batch.report.json. Do not combine with --port.
 Resolution must be 32–2048; tile COUNT must be 2–8.
 The headless 1K/2K build is still a full-grid evaluation; it does NOT
 stream evaluation or reduce memory. Desktop previews remain at up to 512.
@@ -32,6 +36,7 @@ struct Options {
     output: PathBuf,
     resolution: Option<usize>,
     selected: Option<PortRef>,
+    all_outputs: Option<u64>,
     demo: bool,
     no_obj: bool,
     tiles: Option<usize>,
@@ -43,6 +48,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     let mut output = None;
     let mut resolution = None;
     let mut selected = None;
+    let mut all_outputs = None;
     let mut demo = false;
     let mut no_obj = false;
     let mut tiles = None;
@@ -75,6 +81,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
                 }
                 resolution = Some(size);
             }
+            "--all-outputs" => {
+                let value = it.next().ok_or("--all-outputs requires a node ID")?;
+                let id = value.parse::<u64>()
+                    .map_err(|_| "all-outputs node ID must be numeric")?;
+                if id == 0 {
+                    return Err("all-outputs node ID must be positive".into());
+                }
+                if all_outputs.replace(id).is_some() {
+                    return Err("--all-outputs can only be provided once".into());
+                }
+            }
             "--port" => {
                 let value = it.next().ok_or("--port requires NODE:PORT")?;
                 let (node, port) = value.split_once(':').ok_or("--port must be NODE:PORT")?;
@@ -93,11 +110,147 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     if demo && project.is_some() {
         return Err("use either --demo or --project, not both".into());
     }
+    if all_outputs.is_some() && selected.is_some() {
+        return Err("--port and --all-outputs are mutually exclusive".into());
+    }
     let output = output.ok_or("--output STEM is required")?;
     if output.as_os_str().is_empty() {
         return Err("--output must be non-empty".into());
     }
-    Ok(Some(Options { project, output, resolution, selected, demo, no_obj, tiles }))
+    Ok(Some(Options {
+        project, output, resolution, selected, all_outputs, demo, no_obj, tiles
+    }))
+}
+
+fn suffixed(path: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let name = path.file_name().ok_or("Output stem must include a filename")?;
+    Ok(path.with_file_name(format!("{}{suffix}", name.to_string_lossy())))
+}
+
+/// Build all named fields of one node with a single shared graph cache. This
+/// is crucial for erosion/hydrology: wear, deposits, water and flow all come
+/// from one simulation rather than running it again for each exported port.
+fn build_all_outputs(
+    project: &Project, options: &Options, node_id: u64, started: Instant,
+) -> Result<(), String> {
+    let node = project.graph.get(node_id)
+        .ok_or_else(|| format!("Cannot export outputs: missing node #{node_id}"))?;
+    let ports: Vec<PortRef> = node.kind.output_ports().iter()
+        .map(|(name, _)| PortRef::new(node_id, *name))
+        .collect();
+    if ports.is_empty() {
+        return Err(format!("Node #{node_id} declares no outputs"));
+    }
+    if let Some(parent) = options.output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+    }
+    let mut cache = GraphCache::default();
+    let mut reports = Vec::with_capacity(ports.len());
+    let (mut computed, mut reused) = (0_usize, 0_usize);
+    for port in ports {
+        let field = cache.evaluate(&project.graph, project.resolution, &port)?;
+        computed += cache.stats.computed;
+        reused += cache.stats.reused;
+        let stem = suffixed(&options.output, &format!(".node{}.{}", node_id, port.port))?;
+        let png = suffixed(&stem, ".png")?;
+        let format = if field.kind == PortType::Color {
+            let color = field.color.as_ref()
+                .ok_or("Color field has no RGBA source data")?;
+            export_rgb8(color, &png)?;
+            "RGB8"
+        } else {
+            export_png16(&field.data, &png)?;
+            "Grayscale16"
+        };
+
+        let obj = if !options.no_obj && field.kind == PortType::Height {
+            let file = suffixed(&stem, ".obj")?;
+            export_obj(&field.data, &file)?;
+            Some(file.display().to_string())
+        } else {
+            None
+        };
+        let tile_manifest = if let Some(count) = options.tiles {
+            let layout = tile_layout(project.resolution, count)?;
+            let folder = suffixed(&stem, ".tiles")?;
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            for ty in 0..count {
+                for tx in 0..count {
+                    let file = folder.join(format!("x{tx:02}_y{ty:02}.png"));
+                    if field.kind == PortType::Color {
+                        let color = field.color.as_ref()
+                            .ok_or("Color field has no RGBA source data")?;
+                        export_rgb8(&tile_color(color, layout, tx, ty)?, &file)?;
+                    } else {
+                        export_png16(&tile_height(&field.data, layout, tx, ty)?, &file)?;
+                    }
+                }
+            }
+            let manifest_path = suffixed(&stem, ".tiles.json")?;
+            let manifest = json!({
+                "tiles_per_axis": count,
+                "tile_count": count * count,
+                "pixel_size": layout.pixels_per_tile,
+                "overlap_pixels": layout.overlap_pixels,
+                "stitched_pixels": layout.stitched_pixels,
+                "source_pixels": project.resolution,
+                "format": format,
+                "folder": folder.display().to_string(),
+                "file_pattern": "x{XX}_y{YY}.png",
+                "origin": "top-left, x increases right, y increases downward",
+                "sampling": "global bilinear resampling from one completed graph",
+                "processing": "complete graph is evaluated first (not streamed)"
+            });
+            std::fs::write(&manifest_path,
+                serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?
+            ).map_err(|e| e.to_string())?;
+            Some(manifest_path.display().to_string())
+        } else { None };
+        let (min, max, sum) = field.data.values.iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY, 0.0_f64), |(low, high, sum), &v| {
+                (low.min(v), high.max(v), sum + f64::from(v))
+            });
+        reports.push(json!({
+            "node": node_id,
+            "port": port.port,
+            "type": field.kind.label(),
+            "resolution": project.resolution,
+            "png_format": format,
+            "png": png.display().to_string(),
+            "obj": obj,
+            "tile_manifest": tile_manifest,
+            "statistics_channel": if field.kind == PortType::Color {
+                "Rec709 luminance proxy"
+            } else { "raw scalar" },
+            "min_raw": min,
+            "max_raw": max,
+            "mean_raw": sum / field.data.values.len() as f64,
+        }));
+        println!("Built {}² #{}:{} ({format}) → {}",
+            project.resolution, node_id, port.port, png.display());
+    }
+
+    let report = json!({
+        "application": "gaia",
+        "version": env!("CARGO_PKG_VERSION"),
+        "mode": "all_node_outputs",
+        "resolution": project.resolution,
+        "graph_node_count": project.graph.nodes.len(),
+        "node": node_id,
+        "computed_nodes": computed,
+        "reused_nodes": reused,
+        "output_count": reports.len(),
+        "outputs": reports,
+        "duration_ms": started.elapsed().as_millis(),
+    });
+    let report_file = suffixed(&options.output, ".batch.report.json")?;
+    std::fs::write(&report_file,
+        serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?
+    ).map_err(|e| e.to_string())?;
+    println!("Batch report: {}", report_file.display());
+    Ok(())
 }
 
 fn build(options: Options) -> Result<(), String> {
@@ -110,7 +263,10 @@ fn build(options: Options) -> Result<(), String> {
     if let Some(size) = options.resolution {
         project.resolution = size;
     }
-    let output = options.selected
+    if let Some(node) = options.all_outputs {
+        return build_all_outputs(&project, &options, node, started);
+    }
+    let output = options.selected.clone()
         .unwrap_or_else(|| PortRef::height(project.graph.output));
     let field = project.graph.evaluate_port(project.resolution, &output)?;
     if let Some(parent) = options.output.parent() {
@@ -296,7 +452,7 @@ mod tests {
         build(Options {
             project: Some(scene), output: stem.clone(),
             resolution: None, selected: Some(PortRef::new(color_id, "color")),
-            demo: false, no_obj: false, tiles: None,
+            all_outputs: None, demo: false, no_obj: false, tiles: None,
         }).unwrap();
         let file = std::fs::File::open(stem.with_extension("png")).unwrap();
         let reader = png::Decoder::new(std::io::BufReader::new(file));
@@ -345,6 +501,7 @@ mod tests {
             output: stem.clone(),
             resolution: None,
             selected: None,
+            all_outputs: None,
             demo: false,
             no_obj: true,
             tiles: None,
@@ -370,7 +527,7 @@ mod tests {
         let stem = root.join("terrain");
         build(Options {
             project: None, output: stem.clone(), resolution: Some(32),
-            selected: None, demo: true, no_obj: true, tiles: Some(2),
+            selected: None, all_outputs: None, demo: true, no_obj: true, tiles: Some(2),
         }).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(
             &std::fs::read(stem.with_extension("tiles.json")).unwrap()
@@ -423,6 +580,7 @@ mod tests {
             output: stem.clone(),
             resolution: Some(32),
             selected: None,
+            all_outputs: None,
             demo: true,
             no_obj: false,
             tiles: None,
