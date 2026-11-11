@@ -8,6 +8,7 @@ pub mod import;
 pub mod color;
 pub mod drainage;
 pub mod tiles;
+pub mod region;
 pub mod adjust;
 pub mod normals;
 pub mod depression;
