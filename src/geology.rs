@@ -7,6 +7,34 @@ fn uv(index: usize, size: usize) -> f32 {
     index as f32 / (size - 1).max(1) as f32
 }
 
+/// Land surrounded by a guaranteed ocean-level boundary.
+/// Coastline noise modulates the island radius; a smooth shore falloff
+/// avoids a hard step at sea level while the interior retains relief.
+pub fn island(size: usize, seed: u32, radius: f32, height: f32, roughness: f32) -> HeightField {
+    let mut out = HeightField::flat(size, 0.0);
+    if size < 2 { return out; }
+    let radius = radius.clamp(0.15, 0.85);
+    let height = height.clamp(0.0, 3.0);
+    let roughness = roughness.clamp(0.0, 1.0);
+    for y in 0..size {
+        for x in 0..size {
+            let u = uv(x, size);
+            let v = uv(y, size);
+            let dx = u * 2.0 - 1.0;
+            let dy = v * 2.0 - 1.0;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coastal_noise = fractal(u, v, seed, 5.0);
+            let shore = (radius * (1.0 + roughness * 0.35 * (coastal_noise - 0.5)))
+                .min(0.93);
+            let inland = ((shore - distance) / 0.07).clamp(0.0, 1.0);
+            let mask = inland * inland * (3.0 - 2.0 * inland);
+            let relief = fractal(u, v, seed.wrapping_add(97), 3.8);
+            out.values[y * size + x] = height * mask * (0.3 + 0.7 * relief);
+        }
+    }
+    out
+}
+
 pub fn mountain_range(size: usize, seed: u32, height: f32, roughness: f32) -> HeightField {
     let mut output = HeightField::flat(size, 0.0);
     let height = height.clamp(0.0, 3.0);
@@ -205,6 +233,26 @@ pub fn elevation_mask(input: &HeightField, low: f32, high: f32, feather: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn island_has_ocean_boundary_deterministic_coastline_and_interior() {
+        let n = 64;
+        let a = island(n, 7, 0.65, 1.3, 0.75);
+        let b = island(n, 7, 0.65, 1.3, 0.75);
+        let c = island(n, 8, 0.65, 1.3, 0.75);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.get(n / 2, n / 2) > 0.1);
+        for i in 0..n {
+            assert_eq!(a.get(0, i), 0.0);
+            assert_eq!(a.get(n - 1, i), 0.0);
+            assert_eq!(a.get(i, 0), 0.0);
+            assert_eq!(a.get(i, n - 1), 0.0);
+        }
+        assert!(a.values.iter().all(|value| value.is_finite() && *value >= 0.0));
+        assert!(island(n, 7, 0.65, 0.0, 0.75)
+            .values.iter().all(|&value| value == 0.0));
+    }
 
     #[test]
     fn geological_generators_are_deterministic_and_finite() {
