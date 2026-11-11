@@ -5,3 +5,4 @@ pub mod gpu_compute;
 pub mod hydrology;
 pub mod geology;
 pub mod import;
+pub mod color;
