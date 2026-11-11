@@ -59,6 +59,27 @@ pub fn view_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> [f32; 16
     (proj * view).to_cols_array()
 }
 
+/// Smooth default material preview. Height thresholds must not form
+/// abrupt horizontal color rings on smooth crater/volcano geometry.
+fn smooth_band(low: f32, high: f32, value: f32) -> f32 {
+    let t = ((value - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn mix_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    std::array::from_fn(|i| a[i] * (1.0 - t) + b[i] * t)
+}
+
+fn terrain_palette(height: f32, slope: f32) -> [f32; 3] {
+    let base = mix_rgb([0.21, 0.32, 0.29], [0.41, 0.47, 0.31],
+        smooth_band(0.04, 0.37, height));
+    let rock = smooth_band(0.12, 0.40, slope)
+        * smooth_band(0.12, 0.40, height);
+    let worn = mix_rgb(base, [0.49, 0.45, 0.41], rock);
+    mix_rgb(worn, [0.79, 0.81, 0.79], smooth_band(0.72, 1.02, height))
+}
+
 /// The selected RGBA map colors the output heightfield at matching grid UVs.
 fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Vec<u32>) {
     let n = field.size;
@@ -85,16 +106,8 @@ fn mesh(field: &HeightField, color_map: Option<&ColorField>) -> (Vec<Vertex>, Ve
                 [rgba[0].clamp(0.0, 1.0),
                  rgba[1].clamp(0.0, 1.0),
                  rgba[2].clamp(0.0, 1.0)]
-            } else if height < 0.07 {
-                [0.21, 0.31, 0.30]
-            } else if height < 0.28 {
-                [0.37, 0.45, 0.29]
-            } else if height < 0.62 && slope < 0.24 {
-                [0.41, 0.47, 0.31]
-            } else if height < 0.82 {
-                [0.47, 0.43, 0.40]
             } else {
-                [0.79, 0.81, 0.79]
+                terrain_palette(height, slope)
             };
             vertices.push(Vertex {
                 position: [-1.0 + x as f32 * step, height, -1.0 + y as f32 * step],
@@ -410,6 +423,26 @@ impl egui_wgpu::CallbackTrait for TerrainCallback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_preview_palette_is_continuous_near_former_color_thresholds() {
+        for threshold in [0.07, 0.28, 0.62, 0.82] {
+            for slope in [0.0, 0.15, 0.25, 0.60] {
+                let a = terrain_palette(threshold - 0.001, slope);
+                let b = terrain_palette(threshold + 0.001, slope);
+                for channel in 0..3 {
+                    assert!((a[channel] - b[channel]).abs() < 0.025,
+                        "Color jump at {threshold} and slope {slope}");
+                }
+            }
+        }
+        for height in [0.0, 0.2, 0.5, 1.0, 1.8] {
+            for slope in [0.0, 0.3, 0.8] {
+                assert!(terrain_palette(height, slope)
+                    .iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)));
+            }
+        }
+    }
 
     #[test]
     fn terrain_mesh_uses_selected_color_field_without_moving_geometry() {
