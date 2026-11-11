@@ -28,6 +28,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/benchmark-regions.ps1 -Resolution 65 -Tiles 3 -Repeats 2 -SkipBuild
+      - name: Verify hydraulic region build RSS, conservation and six-map determinism
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/benchmark-hydraulic.ps1 -Resolution 128 -Tiles 2 -Repeats 2 -SkipBuild
       - name: Upload Windows preview
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
