@@ -85,6 +85,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Mask Levels transforms typed masks through black/white points, gamma and inversion;
   output can drive masked terrain and color blending.
 - Adjust Height operator combining multiplication, bulking/shaping, optional global autolevel, range clamp and normalized inversion.
+- Equalize modifier: deterministic, tie-aware global histogram redistribution with adjustable 0–1 blend strength; preserves original minimum/maximum elevation and raw height units.
 - Plates generator with seeded plate regions, independent plate-motion directions,
   collision uplift and divergent rifts. Exports regional height, boundary,
   convergence, divergence, plate ID and continental Mask fields. This is a

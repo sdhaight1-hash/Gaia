@@ -443,6 +443,9 @@ impl GaiaApp {
                 clamp_min: 0.0, clamp_max: 4.0,
                 autolevel: false, invert: false,
             });
+        self.palette_node(ui, "◫  Equalize",
+            "Redistribute terrain elevation histogram, retaining min/max height",
+            NodeKind::Equalize { factor: 0.75 });
         self.palette_node(ui, "◎  Blur", "Soften local terrain detail",
             NodeKind::Blur { radius: 2 });
         self.palette_node(ui, "◢  Slope Mask", "Derive a typed slope mask from terrain",
@@ -772,6 +775,11 @@ impl GaiaApp {
                     changed |= ui.checkbox(autolevel, "Global Autolevel").changed();
                     changed |= ui.checkbox(invert, "Invert normalized heights").changed();
                     ui.small("Positive Shaper bulks mountains before erosion; Autolevel uses the entire input range.");
+                }
+                NodeKind::Equalize { factor } => {
+                    changed |= ui.add(egui::Slider::new(factor, 0.0..=1.0)
+                        .text("Equalize factor")).changed();
+                    ui.small("Global histogram redistribution; 0 preserves the original and 1 fully equalizes, with min/max elevation unchanged.");
                 }
                 NodeKind::Blur { radius } => {
                     changed |= ui.add(egui::Slider::new(radius, 1..=8).text("Radius")).changed();
@@ -1426,7 +1434,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Plates { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Sea { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::Equalize { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Sea { .. } | NodeKind::Snow { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::AmbientOcclusion { .. } | NodeKind::Sunlight { .. } | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,

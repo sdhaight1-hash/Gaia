@@ -2,7 +2,7 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
-use crate::adjust::adjust_height;
+use crate::adjust::{adjust_height, equalize_height};
 use crate::normals::derive_normals;
 use crate::drainage::drainage;
 use crate::depression::fill_depressions;
@@ -405,7 +405,7 @@ impl NodeKind {
             (Self::Colorize { .. } | Self::Normals { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. } | Self::Snow { .. } | Self::Sea { .. } | Self::AmbientOcclusion { .. } | Self::Sunlight { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Equalize { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. } | Self::Snow { .. } | Self::Sea { .. } | Self::AmbientOcclusion { .. } | Self::Sunlight { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -496,6 +496,9 @@ fn evaluate_kind(
             NodeOutputs::default().with("height", PortType::Height,
                 adjust_height(take(0), *multiply, *shaper, *clamp_min,
                     *clamp_max, *autolevel, *invert)?),
+        NodeKind::Equalize { factor } => NodeOutputs::default()
+            .with("height", PortType::Height,
+                equalize_height(take(0), *factor, &cancelled)?),
         NodeKind::Normals { strength, flip_green } =>
             NodeOutputs::default().with_color("normal",
                 derive_normals(take(0), *strength, *flip_green)?),
