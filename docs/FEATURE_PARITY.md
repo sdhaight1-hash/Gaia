@@ -18,7 +18,7 @@ https://docs.gaea.app/reference/nodes/simulate/erosion
 | Erosion | Mass-conserving thermal talus + separate wear/deposits; experimental rain/flow/sediment model with open-boundary water/solids ledger | Production-quality large-scale hydraulic erosion, river carving, rock/scree/debris, numerical/visual Gaea-level fidelity |
 | Hydrology | Water depth, suspended sediment, cumulative flow map | Rivers/lakes/sea geometry, watershed hierarchy, coastlines, stable high-resolution water systems |
 | Masks | Slope, Curvature, compass-facing Aspect, Elevation, Wear, Deposits, Flow | Terrain feature classifiers, rock/soil/weathering, mask painting and advanced compositing |
-| Color/materials | RGBA Color fields, editable altitude palettes, typed masked Color Mixer, 2D preview, RGB8 PNG export in GUI/CLI | 3D material rendering, PBR/shaders, stratified materials, texture/splat/normal maps |
+| Color/materials | RGBA Color fields, editable altitude palettes, typed masked Color Mixer, 2D/3D vertex-color preview, RGB8 PNG export in GUI/CLI | PBR material model, multi-layer textures, stratified materials, splat/normal maps |
 | Snow, ice, vegetation | Not implemented | Glacier/snowpack simulation, climate-dependent vegetation/scatter, point exports |
 | Viewport/editor | Themed docked workspace, 2D maps, depth-tested wgpu 3D mesh preview, draggable socket wires, property inspector and export menu | Per-node thumbnails, analysis overlays, painting tools, native dialogs, persisted workspaces, visual QA |
 | Output/build | Portable JSON projects, grayscale PNG8/PNG16 import, scalar PNG16/RGB8 color PNG/OBJ export, selected-port headless CLI | Large tiled/region builds, adaptive meshes, layered material exports, job queue and DCC/engine integrations |
@@ -48,7 +48,7 @@ Real GPU numerical results remain required.
    overlays and a reproducible benchmark suite.
 3. Expand hydrology (flow accumulation, drains, channel extraction, lakes),
    test water/solid ledgers over long runs and validate tile seams.
-4. Integrate existing typed Color buffers with the 3D material preview, then
+4. Evolve the colorized 3D preview into proper layered PBR materials, then
    environment-aware surface and ecosystem models.
 5. Tiled evaluation and GPU batched kernels with CPU reference checks,
    caches, cancellation, persistent build artifacts and headless CLI.
