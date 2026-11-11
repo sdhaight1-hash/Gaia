@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `fix/selected-height-3d-preview` (stacked on preceding PRs).
+Development branch: `feat/plate-boundary-uplift` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -29,7 +29,7 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 
 ## Current workflow
 
-- Left **Node Library**: Mountain, Island, Volcano, Noise, Mountain Range, Crater, Dunes,
+- Left **Node Library**: Mountain, Island, Volcano, Plates, Noise, Mountain Range, Crater, Dunes,
   Canyon, thermal erosion, hydraulic erosion, Terrace, Stratify, Adjust, Blur, Slope Mask,
   Curvature, Aspect Mask, Drainage, Depression Fill, Rivers, Lake, Snow, Elevation Mask, Mask Levels, Warp,
   Blend, Masked Blend, Normals, Colorize and Color Mixer.
@@ -85,6 +85,11 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Mask Levels transforms typed masks through black/white points, gamma and inversion;
   output can drive masked terrain and color blending.
 - Adjust Height operator combining multiplication, bulking/shaping, optional global autolevel, range clamp and normalized inversion.
+- Plates generator with seeded plate regions, independent plate-motion directions,
+  collision uplift and divergent rifts. Exports regional height, boundary,
+  convergence, divergence, plate ID and continental Mask fields. This is a
+  deterministic kinematic terrain primitive, not a million-year tectonic
+  reconstruction or a physically coupled lithosphere/mantle solver.
 - Volcano generator with adjustable cone radius, summit crater, bulk, surface breakup and center placement.
 - Stratify terrain operator for seeded, warped and tilted sedimentary-looking rock layers; preserves the input terrain silhouette rather than replacing it.
 - Island generator with seed-controlled shoreline roughness, interior relief,
