@@ -268,7 +268,8 @@ impl GaiaApp {
 
     fn add_node(&mut self, kind: NodeKind) {
         let is_mask = matches!(kind,
-            NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. }
+            NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. }
+            | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. }
             | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. });
         self.selected = self.project.graph.add(kind);
         if let Some(node) = self.project.graph.get(self.selected) {
@@ -331,6 +332,8 @@ impl GaiaApp {
             NodeKind::Curvature);
         self.palette_node(ui, "◐  Aspect Mask", "Select slopes facing a compass direction",
             NodeKind::Aspect { azimuth: 0.0, half_width: 65.0, min_slope: 0.02 });
+        self.palette_node(ui, "⌁  Drainage", "Derive upstream drainage and channel masks",
+            NodeKind::Drainage { min_catchment_fraction: 0.01 });
         self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
             NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
         self.palette_node(ui, "↝  Warp", "Distort a terrain using two noise fields",
@@ -590,6 +593,11 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(min_slope, 0.0..=2.0)
                         .text("Minimum slope")).changed();
                     ui.small("0° North, 90° East, 180° South, 270° West. Flat terrain is black.");
+                }
+                NodeKind::Drainage { min_catchment_fraction } => {
+                    changed |= ui.add(egui::Slider::new(min_catchment_fraction, 0.001..=0.2)
+                        .text("Channel fraction")).changed();
+                    ui.small("Two masks: accumulation and channels. Strict D8 downhill flow; local sinks are terminal, without lake filling.");
                 }
                 NodeKind::ElevationMask { low, high, feather } => {
                     changed |= ui.add(egui::Slider::new(low, 0.0..=1.0).text("Min height")).changed();
@@ -1062,7 +1070,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } => ui_theme::AMBER,
-        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
 }
 
