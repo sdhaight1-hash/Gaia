@@ -267,11 +267,11 @@ mod tests {
         file.write_all(&[first[0] ^ 1]).unwrap();
         drop(file);
         assert!(DiskTransport::open_checkpoint(&path, || false)
-            .unwrap_err().contains("checksum"));
+            .err().unwrap().contains("checksum"));
         let file = fs::OpenOptions::new().write(true).open(&target).unwrap();
         file.set_len(12).unwrap();
         assert!(DiskTransport::open_checkpoint(&path, || false)
-            .unwrap_err().contains("length"));
+            .err().unwrap().contains("length"));
     }
 
     #[test]
@@ -308,6 +308,6 @@ mod tests {
         json["version"] = serde_json::json!(99);
         fs::write(&manifest_path, serde_json::to_vec(&json).unwrap()).unwrap();
         assert!(DiskTransport::open_checkpoint(&path, || false)
-            .unwrap_err().contains("Unsupported"));
+            .err().unwrap().contains("Unsupported"));
     }
 }
