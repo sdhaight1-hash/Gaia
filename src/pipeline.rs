@@ -7,6 +7,7 @@ use crate::normals::derive_normals;
 use crate::drainage::drainage;
 use crate::depression::fill_depressions;
 use crate::rivers::carve_rivers;
+use crate::lakes::fill_lakes;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
@@ -321,6 +322,12 @@ impl NodeKind {
             ("channels", PortType::Mask),
             ("wear", PortType::Mask),
         ];
+        const LAKE: &[(&str, PortType)] = &[
+            ("height", PortType::Height),
+            ("surface", PortType::Height),
+            ("water", PortType::Water),
+            ("coverage", PortType::Mask),
+        ];
         const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
         const EROSION: &[(&str, PortType)] = &[
             ("height", PortType::Height),
@@ -346,6 +353,7 @@ impl NodeKind {
             Self::Drainage { .. } => DRAINAGE,
             Self::DepressionFill { .. } => DEPRESSION,
             Self::Rivers { .. } => RIVERS,
+            Self::Lake { .. } => LAKE,
             Self::MaskLevels { .. } => MASK_LEVELS,
             Self::ElevationMask { .. } => ELEVATION,
             _ => HEIGHT,
@@ -365,7 +373,7 @@ impl NodeKind {
             (Self::Colorize { .. } | Self::Normals { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
-            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. }, 0) => Some(PortType::Height),
+            (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Stratify { .. } | Self::Adjust { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. } | Self::Drainage { .. } | Self::DepressionFill { .. } | Self::Rivers { .. } | Self::Lake { .. }, 0) => Some(PortType::Height),
             _ => None,
         }
     }
@@ -479,6 +487,15 @@ fn evaluate_kind(
                 .with("height", PortType::Height, fields.height)
                 .with("channels", PortType::Mask, fields.channels)
                 .with("wear", PortType::Mask, fields.wear)
+        },
+        NodeKind::Lake { fill_fraction, minimum_area, minimum_depth } => {
+            let fields = fill_lakes(take(0), *fill_fraction, *minimum_area,
+                *minimum_depth, &cancelled)?;
+            NodeOutputs::default()
+                .with("height", PortType::Height, fields.height)
+                .with("surface", PortType::Height, fields.surface)
+                .with("water", PortType::Water, fields.water)
+                .with("coverage", PortType::Mask, fields.coverage)
         },
         NodeKind::MaskLevels { black, white, gamma, invert } =>
             NodeOutputs::default().with("mask", PortType::Mask,
