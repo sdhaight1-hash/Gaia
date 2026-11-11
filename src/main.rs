@@ -34,6 +34,7 @@ fn classify_drop(path: &Path) -> DroppedDocument {
 struct GaiaApp {
     project: Project,
     field: HeightField,
+    material_color: Option<ColorField>,
     worker: GraphWorker,
     texture: Option<egui::TextureHandle>,
     preview_source: PortRef,
@@ -78,6 +79,7 @@ impl GaiaApp {
             wire_start: None,
             project,
             field,
+            material_color: None,
             worker,
             texture,
             preview_source,
@@ -118,6 +120,7 @@ impl GaiaApp {
                     } else {
                         height_image(&result.preview)
                     };
+                    self.material_color = result.preview_color;
                     if let Some(texture) = self.texture.as_mut() {
                         texture.set(image, egui::TextureOptions::LINEAR);
                     } else {
@@ -934,7 +937,9 @@ impl GaiaApp {
         ui.painter().text(rect.left_bottom() + egui::vec2(16.0, -17.0),
             egui::Align2::LEFT_BOTTOM,
             if self.view_2d { "Selected map available as 16-bit PNG in Export" }
-            else { "Drag to orbit   •   Scroll to zoom" },
+            else if self.material_color.is_some() {
+                "COLOR MAP ON TERRAIN   •   Drag to orbit   •   Scroll to zoom"
+            } else { "Drag to orbit   •   Scroll to zoom" },
             egui::FontId::proportional(12.0), ui_theme::TEXT);
     }
 }
@@ -1041,7 +1046,7 @@ impl eframe::App for GaiaApp {
         self.poll_worker(&ctx);
         if self.gpu_dirty {
             if let Some(render_state) = frame.wgpu_render_state() {
-                gpu::upload(render_state, &self.field,
+                gpu::upload(render_state, &self.field, self.material_color.as_ref(),
                     gpu::eye_position(self.yaw, self.pitch, self.distance));
             }
             self.gpu_dirty = false;
