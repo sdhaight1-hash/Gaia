@@ -32,6 +32,7 @@ pub enum NodeKind {
     Colorize { low: [f32; 3], high: [f32; 3], midpoint: f32, contrast: f32 },
     ColorMixer { mix: f32 },
     Drainage { min_catchment_fraction: f32 },
+    MaskLevels { black: f32, white: f32, gamma: f32, invert: bool },
     Range { seed: u32, height: f32, roughness: f32 },
     Crater { seed: u32, radius: f32, depth: f32, rim: f32 },
     Dunes { seed: u32, frequency: f32, amplitude: f32 },
@@ -59,6 +60,7 @@ impl NodeKind {
             Self::Colorize { .. } => "Colorize",
             Self::ColorMixer { .. } => "Color mixer",
             Self::Drainage { .. } => "Drainage",
+            Self::MaskLevels { .. } => "Mask levels",
             Self::Range { .. } => "Mountain range",
             Self::Crater { .. } => "Crater",
             Self::Dunes { .. } => "Dunes",
@@ -229,7 +231,14 @@ impl Graph {
 
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         let id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
-        let inputs = if matches!(kind, NodeKind::ColorMixer { .. }) {
+        let inputs = if matches!(kind, NodeKind::MaskLevels { .. }) {
+            let mask = self.nodes.iter().rev().find_map(|node| {
+                node.kind.output_ports().iter()
+                    .find(|(_, ty)| *ty == crate::pipeline::PortType::Mask)
+                    .map(|(name, _)| PortRef::new(node.id, *name))
+            }).unwrap_or_else(|| PortRef::new(self.output, "wear"));
+            vec![mask]
+        } else if matches!(kind, NodeKind::ColorMixer { .. }) {
             let color_sources: Vec<PortRef> = self.nodes.iter().rev()
                 .filter_map(|node| node.kind.output_ports().iter()
                     .find(|(_, ty)| *ty == crate::pipeline::PortType::Color)
