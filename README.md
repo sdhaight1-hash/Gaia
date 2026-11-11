@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/river-carving` (stacked on preceding PRs).
+Development branch: `fix/typed-node-autowiring` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -36,8 +36,10 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Bottom graph: click/select and drag nodes; connect compatible named
   output and input sockets directly. When adding a node, Gaia connects its
   first compatible input to the selected output port and places it beside the
-  source (avoiding occupied cards). Unused nodes can be deleted in the
-  right **Inspector**; nodes with dependents are protected.
+  source (avoiding occupied cards). Mask-aware and Color-aware compositors
+  automatically create missing Slope or initial Colorize source nodes so new
+  graph nodes do not start with invalid placeholder input ports.
+  Unused nodes can be deleted in the right **Inspector**; nodes with dependents are protected.
 - Right inspector: change procedural parameters and graph resolution
   (64, 128, 256 or 512); select a height-producing output node.
 - Center **3D** preview: left drag orbit, scroll zoom, reset camera.
