@@ -2,6 +2,8 @@
 //! No window or GPU required; intended for production pipelines and CI.
 use gaia::pipeline::{GraphCache, PortRef, PortType};
 use gaia::color::{export_rgb8, export_splat_rgba8};
+use gaia::hydraulic_build::build_hydraulic_regions;
+use gaia::hydraulic_exchange::WorldEdge;
 use gaia::tiles::{tile_layout, tile_height, tile_color};
 use gaia::region::{evaluate_region, evaluate_color_region, validate_region_graph,
     RegionLayout, MAX_REGION_RESOLUTION};
@@ -14,6 +16,7 @@ Usage: gaia-build --project FILE --output STEM [--resolution N] [--port NODE:POR
        gaia-build --project FILE --output STEM --all-outputs NODE [--resolution N] [--no-obj] [--tiles COUNT]
        gaia-build --demo --output STEM [--resolution N] [--no-obj] [--tiles COUNT]
        gaia-build --project FILE --output STEM --port NODE:PORT --no-obj --region-tiles COUNT [--resolution N]
+       gaia-build --project FILE --output STEM --hydraulic-region NODE --no-obj --region-tiles COUNT [--resolution N] [--hydraulic-edge open|closed] [--hydraulic-checkpoint]
 
 Examples:
   gaia-build --project terrain.gaia.json --output builds/mountain
@@ -23,6 +26,7 @@ Examples:
   gaia-build --project terrain.gaia.json --output builds/erosion --all-outputs 2
   gaia-build --demo --port 1:height --output builds/mountain-regions --no-obj --region-tiles 4 --resolution 4096
   gaia-build --project terrain.gaia.json --port 8:slope --output builds/slope-regions --no-obj --region-tiles 4
+  gaia-build --project terrain.gaia.json --hydraulic-region 8 --output builds/eroded --no-obj --region-tiles 4 --resolution 512
 
 Exports PNG16 for scalar fields, RGB8 for Color, RGBA8 for Splat weights,
 and OBJ for height outputs.
@@ -39,8 +43,17 @@ Supports local Mountain, Noise, Adjust (autolevel OFF), Blur, Blend, Masked
 Blend, Slope, Curvature, Aspect, Elevation Mask, Mask Levels, Colorize and
 Color Mixer and Material Masks (sand/soil/rock/snow, albedo, splat).
 Erosion, hydrology, autolevel and other global nodes are rejected
-explicitly (never silently fall back to full-grid evaluation). Desktop
-previews remain at up to 512.
+explicitly (never silently fall back to full-grid evaluation).
+--hydraulic-region NODE is an opt-in 2D disk-backed hydraulic build for an
+existing Hydraulic node whose upstream Height inputs support regional evaluation.
+Runs the node's own iteration/physics settings and exports height/water/
+sediment/wear/deposits/flow to STEM.hydraulic.tiles/ as six PNG16 tile sets
+with shared world-grid border samples and a report.json. 2D simulation cores
+are each <=256 pixels per axis (e.g. 4+ tiles per axis for 1024 resolution).
+--hydraulic-edge defaults to open. --hydraulic-checkpoint additionally saves
+the f32 restart state into that output folder. No full-world heightfield is
+allocated. This does not enable Hydraulic in ordinary --region-tiles builds.
+Desktop previews remain at up to 512.
 "#;
 
 #[derive(Debug)]
@@ -54,6 +67,9 @@ struct Options {
     no_obj: bool,
     tiles: Option<usize>,
     region_tiles: Option<usize>,
+    hydraulic_region: Option<u64>,
+    hydraulic_edge: WorldEdge,
+    hydraulic_checkpoint: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>, String> {
@@ -67,6 +83,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     let mut no_obj = false;
     let mut tiles = None;
     let mut region_tiles = None;
+    let mut hydraulic_region = None;
+    let mut hydraulic_edge = WorldEdge::Open;
+    let mut hydraulic_checkpoint = false;
+    let mut hydraulic_edge_set = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(None),
@@ -81,6 +101,27 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
                 }
                 tiles = Some(count);
             },
+            "--hydraulic-region" => {
+                let value = it.next().ok_or("--hydraulic-region requires a node ID")?;
+                let node = value.parse::<u64>()
+                    .map_err(|_| "--hydraulic-region NODE must be numeric")?;
+                if node == 0 || hydraulic_region.replace(node).is_some() {
+                    return Err("--hydraulic-region requires one positive node ID".into());
+                }
+            },
+            "--hydraulic-edge" => {
+                if hydraulic_edge_set {
+                    return Err("--hydraulic-edge may only be specified once".into());
+                }
+                let value = it.next().ok_or("--hydraulic-edge requires open|closed")?;
+                hydraulic_edge = match value.as_str() {
+                    "open" => WorldEdge::Open,
+                    "closed" => WorldEdge::Closed,
+                    _ => return Err("--hydraulic-edge requires open or closed".into()),
+                };
+                hydraulic_edge_set = true;
+            },
+            "--hydraulic-checkpoint" => hydraulic_checkpoint = true,
             "--region-tiles" => {
                 let value = it.next().ok_or("--region-tiles requires COUNT")?;
                 let count: usize = value.parse()
@@ -136,6 +177,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     if all_outputs.is_some() && selected.is_some() {
         return Err("--port and --all-outputs are mutually exclusive".into());
     }
+    if hydraulic_region.is_some() {
+        if region_tiles.is_none() || !no_obj || all_outputs.is_some() ||
+            selected.is_some() || tiles.is_some() || demo
+        {
+            return Err("--hydraulic-region requires --project, --region-tiles COUNT and --no-obj; it cannot combine with --port, --all-outputs, --tiles or --demo".into());
+        }
+    } else if hydraulic_edge_set || hydraulic_checkpoint {
+        return Err("--hydraulic-edge and --hydraulic-checkpoint require --hydraulic-region".into());
+    }
     if region_tiles.is_some() {
         if tiles.is_some() || all_outputs.is_some() {
             return Err("--region-tiles cannot combine with --tiles or --all-outputs".into());
@@ -155,7 +205,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
     }
     Ok(Some(Options {
         project, output, resolution, selected, all_outputs, demo, no_obj, tiles,
-        region_tiles,
+        region_tiles, hydraulic_region, hydraulic_edge, hydraulic_checkpoint,
     }))
 }
 
@@ -437,6 +487,16 @@ fn build(options: Options) -> Result<(), String> {
     }
     if let Some(node) = options.all_outputs {
         return build_all_outputs(&project, &options, node, started);
+    }
+    if let Some(node) = options.hydraulic_region {
+        let folder = build_hydraulic_regions(
+            &project, node,
+            options.region_tiles.ok_or("Missing region tile count")?,
+            &options.output, options.hydraulic_edge, options.hydraulic_checkpoint,
+        )?;
+        println!("Hydraulic region build → {}", folder.display());
+        println!("Report: {}", folder.join("report.json").display());
+        return Ok(());
     }
     let output = options.selected.clone()
         .unwrap_or_else(|| PortRef::height(project.graph.output));
@@ -921,7 +981,7 @@ mod tests {
             project: None,
             output: stem.clone(), resolution: Some(32),
             selected: None, all_outputs: Some(2),
-            demo: true, no_obj: false, tiles: Some(2), region_tiles: None,
+            demo: true, no_obj: false, tiles: Some(2), region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         let report_path = suffixed(&stem, ".batch.report.json").unwrap();
         let report: serde_json::Value = serde_json::from_slice(
@@ -952,7 +1012,7 @@ mod tests {
             project: None,
             output: standalone.clone(), resolution: Some(32),
             selected: Some(PortRef::new(2, "wear")), all_outputs: None,
-            demo: true, no_obj: true, tiles: None, region_tiles: None,
+            demo: true, no_obj: true, tiles: None, region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         assert_eq!(std::fs::read(
             suffixed(&suffixed(&stem, ".node2.wear").unwrap(), ".png").unwrap()
@@ -981,7 +1041,7 @@ mod tests {
             project: Some(scene),
             output: stem.clone(), resolution: None,
             selected: None, all_outputs: Some(node),
-            demo: false, no_obj: false, tiles: None, region_tiles: None,
+            demo: false, no_obj: false, tiles: None, region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         let png = suffixed(&stem, &format!(".node{node}.color.png")).unwrap();
         let img = png::Decoder::new(std::io::BufReader::new(
@@ -1030,7 +1090,7 @@ mod tests {
         build(Options {
             project: Some(scene), output: stem.clone(),
             resolution: None, selected: Some(PortRef::new(color_id, "color")),
-            all_outputs: None, demo: false, no_obj: false, tiles: None, region_tiles: None,
+            all_outputs: None, demo: false, no_obj: false, tiles: None, region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         let file = std::fs::File::open(stem.with_extension("png")).unwrap();
         let reader = png::Decoder::new(std::io::BufReader::new(file));
@@ -1082,7 +1142,7 @@ mod tests {
             all_outputs: None,
             demo: false,
             no_obj: true,
-            tiles: None, region_tiles: None,
+            tiles: None, region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         assert!(stem.with_extension("png").exists());
         let restored = gaia::import::read_heightmap(
@@ -1105,7 +1165,7 @@ mod tests {
         let stem = root.join("terrain");
         build(Options {
             project: None, output: stem.clone(), resolution: Some(32),
-            selected: None, all_outputs: None, demo: true, no_obj: true, tiles: Some(2), region_tiles: None,
+            selected: None, all_outputs: None, demo: true, no_obj: true, tiles: Some(2), region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(
             &std::fs::read(stem.with_extension("tiles.json")).unwrap()
@@ -1161,7 +1221,7 @@ mod tests {
             all_outputs: None,
             demo: true,
             no_obj: false,
-            tiles: None, region_tiles: None,
+            tiles: None, region_tiles: None, hydraulic_region: None, hydraulic_edge: WorldEdge::Open, hydraulic_checkpoint: false,
         }).unwrap();
         assert!(stem.with_extension("png").exists());
         assert!(stem.with_extension("obj").exists());
