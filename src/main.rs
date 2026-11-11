@@ -270,7 +270,7 @@ impl GaiaApp {
         let is_mask = matches!(kind,
             NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. }
             | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. }
-            | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. });
+            | NodeKind::MaskLevels { .. } | NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. });
         self.selected = self.project.graph.add(kind);
         if let Some(node) = self.project.graph.get(self.selected) {
             if let Some((name, _)) = node.kind.output_ports().first() {
@@ -338,6 +338,8 @@ impl GaiaApp {
             NodeKind::Drainage { min_catchment_fraction: 0.01 });
         self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
             NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
+        self.palette_node(ui, "◩  Mask Levels", "Remap mask black/white points, gamma and invert",
+            NodeKind::MaskLevels { black: 0.0, white: 1.0, gamma: 1.0, invert: false });
         self.palette_node(ui, "↝  Warp", "Distort a terrain using two noise fields",
             NodeKind::Warp { seed: 55, frequency: 4.0, amount: 0.08 });
         ui.add_space(16.0);
@@ -607,6 +609,16 @@ impl GaiaApp {
                     changed |= ui.add(egui::Slider::new(min_catchment_fraction, 0.001..=0.2)
                         .text("Channel fraction")).changed();
                     ui.small("Two masks: accumulation and channels. Strict D8 downhill flow; local sinks are terminal, without lake filling.");
+                }
+                NodeKind::MaskLevels { black, white, gamma, invert } => {
+                    changed |= ui.add(egui::Slider::new(black, 0.0..=1.0)
+                        .text("Black point")).changed();
+                    changed |= ui.add(egui::Slider::new(white, 0.0..=1.0)
+                        .text("White point")).changed();
+                    changed |= ui.add(egui::Slider::new(gamma, 0.1..=4.0)
+                        .text("Gamma")).changed();
+                    changed |= ui.checkbox(invert, "Invert mask").changed();
+                    ui.small("Black must remain below white. Input and output are typed Mask fields.");
                 }
                 NodeKind::ElevationMask { low, high, feather } => {
                     changed |= ui.add(egui::Slider::new(low, 0.0..=1.0).text("Min height")).changed();
@@ -1079,7 +1091,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } => ui_theme::AMBER,
-        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
+        NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
     }
 }
 
