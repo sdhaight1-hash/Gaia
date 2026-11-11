@@ -386,6 +386,12 @@ impl Graph {
         Ok(removed)
     }
 
+    /// Visual card bounds for collision avoidance. Must track the editor's
+    /// graph_view card metrics (194 width; 65 + ports*22 height).
+    fn card_visual_height(node: &Node) -> f32 {
+        65.0 + node.inputs.len().max(node.kind.output_ports().len()).max(1) as f32 * 22.0
+    }
+
     pub fn add(&mut self, kind: NodeKind) -> u64 {
         // An empty project graph can lack both masks and color fields. Invalid
         // placeholder ports like #output:wear poisoned evaluation immediately
@@ -455,7 +461,7 @@ impl Graph {
         };
         let position = [
             65.0 + (self.nodes.len() % 4) as f32 * 220.0,
-            205.0 + (self.nodes.len() / 4) as f32 * 115.0,
+            205.0 + (self.nodes.len() / 4) as f32 * 218.0,
         ];
         let has_height = kind.output_ports().iter()
             .any(|(name, _)| *name == "height");
@@ -489,12 +495,17 @@ impl Graph {
         }
         if let Some([x, y]) = source_position {
             let mut target = [x + 235.0, y];
-            // Avoid placing new cards directly on top of prior cards.
-            while self.nodes.iter().any(|node| node.id != id &&
-                (node.position[0] - target[0]).abs() < 205.0 &&
-                (node.position[1] - target[1]).abs() < 104.0
+            // Use actual card bounds, not a fixed 104px vertical gap:
+            // multi-output terrain nodes can be almost 200px tall.
+            let new_height = self.get(id).map(Self::card_visual_height)
+                .expect("new node exists");
+            while let Some(other) = self.nodes.iter().find(|node| node.id != id
+                && target[0] < node.position[0] + 209.0
+                && target[0] + 209.0 > node.position[0]
+                && target[1] < node.position[1] + Self::card_visual_height(node) + 15.0
+                && target[1] + new_height + 15.0 > node.position[1]
             ) {
-                target[1] += 112.0;
+                target[1] = other.position[1] + Self::card_visual_height(other) + 16.0;
             }
             if let Some(node) = self.nodes.iter_mut().find(|node| node.id == id) {
                 node.position = target;
@@ -895,6 +906,23 @@ mod tests {
         let mut invalid = field;
         invalid.values[0] = f32::NAN;
         assert!(export_obj(&invalid, &file).is_err());
+    }
+
+    #[test]
+    fn context_creation_avoids_tall_multioutput_card_overlap() {
+        let mut graph = Project::default().graph;
+        let first = graph.add_from(NodeKind::Sea {
+            level: 0.2, shore_width: 5, erosion: 0.1,
+        }, &PortRef::height(1));
+        let second = graph.add_from(NodeKind::Sea {
+            level: 0.3, shore_width: 6, erosion: 0.2,
+        }, &PortRef::height(1));
+        let a = graph.get(first).unwrap();
+        let b = graph.get(second).unwrap();
+        let dx = (a.position[0] - b.position[0]).abs();
+        let dy = (a.position[1] - b.position[1]).abs();
+        assert!(dx >= 209.0 || dy >= Graph::card_visual_height(a) + 15.0,
+            "new sea nodes overlap: {:?} / {:?}", a.position, b.position);
     }
 
     #[test]

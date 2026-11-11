@@ -1399,11 +1399,19 @@ impl GaiaApp {
         let can_move = !space && !middle;
         for node in &mut self.project.graph.nodes {
             let node_rect = view.node_rect(rect, node);
-            let response = ui.interact(node_rect, ui.id().with(("node", node.id)),
+            // Only the title bar drags nodes. A whole-card drag target
+            // competed with port handles, causing attempted cable drags to
+            // move cards instead of beginning a connection.
+            let response = ui.interact(node_rect,
+                ui.id().with(("node-select", node.id)), egui::Sense::click());
+            let title_rect = egui::Rect::from_min_size(node_rect.min,
+                egui::vec2(node_rect.width(), 42.0 * view.zoom));
+            let title_response = ui.interact(title_rect,
+                ui.id().with(("node-title", node.id)),
                 egui::Sense::click_and_drag())
-                .on_hover_text("Click to inspect · drag to move · right-click for actions");
+                .on_hover_text("Drag header to move · right-click for actions");
             let node_id = node.id;
-            response.context_menu(|ui| {
+            title_response.context_menu(|ui| {
                 ui.label(format!("{}  #{}", node.kind.label(), node_id));
                 if ui.button("Select node").clicked() {
                     self.selected = node_id;
@@ -1417,14 +1425,14 @@ impl GaiaApp {
                     ui.close();
                 }
             });
-            if response.clicked() {
+            if response.clicked() || title_response.clicked() {
                 self.selected = node.id;
                 if let Some((port, _)) = node.kind.output_ports().first() {
                     requested_preview = Some(PortRef::new(node.id, *port));
                 }
             }
-            if response.dragged() && can_move {
-                let motion = response.drag_motion() / view.zoom;
+            if title_response.dragged() && can_move {
+                let motion = title_response.drag_motion() / view.zoom;
                 node.position[0] += motion.x;
                 node.position[1] += motion.y;
                 self.selected = node.id;
@@ -1435,7 +1443,7 @@ impl GaiaApp {
             let selected = self.selected == node.id;
             let background_color = if selected {
                 egui::Color32::from_rgb(36, 56, 59)
-            } else if response.hovered() {
+            } else if response.hovered() || title_response.hovered() {
                 egui::Color32::from_rgb(41, 50, 59)
             } else {
                 ui_theme::PANEL_RAISED
