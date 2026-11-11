@@ -17,7 +17,7 @@ with Vulkan/DX12-capable GPU drivers. No Rust toolchain is necessary for
 an artifact download. These builds have not been physically tested with
 a target GPU by the maintainers.
 
-Development branch: `feat/safe-node-deletion` (stacked on preceding PRs).
+Development branch: `feat/editor-undo-redo` (stacked on preceding PRs).
 
 To compile from source:
 
@@ -41,8 +41,10 @@ Requires Rust 1.95+ and a current Vulkan/DX12-capable graphics driver.
 - Center **2D map**: choose any existing node output port (height,
   wear, deposits, flow, water, sediment, slope, curvature, elevation mask)
   and inspect the result.
-- Top toolbar: Save, Open, Export, Rebuild. `Ctrl+S` and `Ctrl+O`
-  shortcuts. Save/Open use an editable project path, not file dialogs.
+- Top toolbar: Save, Open, Undo, Redo, Export, Rebuild. `Ctrl+S`,
+  `Ctrl+O`, `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` shortcuts. Pointer
+  drags coalesce into one undo step; history holds the last 64 edits.
+  Save/Open use an editable project path, not file dialogs.
 - Export normalised 16-bit grayscale PNG heightmaps, selected scalar
   maps, or OBJ terrain meshes. All project parameters and connection
   references are serialized to JSON.
@@ -97,8 +99,7 @@ adapter is available; that is **not** evidence of GPU correctness.
 
 ## Known limitations
 
-- Production-grade depth-buffered preview, on-canvas socket wiring,
-  undo/redo, native file dialogs, color materials, terrain painting,
+- Native file dialogs, color materials, terrain painting,
   vegetation, snow/glaciers, lakes, rivers, tiles, large resolutions,
   high-end geology and production exports are not finished.
 - Graph cores are currently height/mask/water scalar fields. Color,
