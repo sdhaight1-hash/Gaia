@@ -6,7 +6,7 @@ use crate::drainage::drainage;
 use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
-use crate::geology::{mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask};
+use crate::geology::{island, mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask};
 use crate::terrain::{
     blur, generate_mountain, generate_noise, terrace, thermal_erosion_fields_checked, Graph, HeightField,
     NodeKind,
@@ -331,7 +331,8 @@ impl NodeKind {
 
     pub fn input_type(&self, slot: usize) -> Option<PortType> {
         match (self, slot) {
-            (Self::Mountain { .. } | Self::Noise { .. } | Self::ImportHeight { .. } |
+            (Self::Mountain { .. } | Self::Island { .. } |
+             Self::Noise { .. } | Self::ImportHeight { .. } |
              Self::Range { .. } | Self::Crater { .. } |
              Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
@@ -362,6 +363,9 @@ fn evaluate_kind(
         NodeKind::Mountain { seed, frequency, height } =>
             NodeOutputs::default().with("height", PortType::Height,
                 generate_mountain(size, *seed, *frequency, *height)),
+        NodeKind::Island { seed, radius, height, roughness } =>
+            NodeOutputs::default().with("height", PortType::Height,
+                island(size, *seed, *radius, *height, *roughness)),
         NodeKind::ImportHeight { path, scale } => NodeOutputs::default()
             .with("height", PortType::Height, read_heightmap(Path::new(path), size, *scale)?),
         NodeKind::Colorize { low, high, midpoint, contrast } =>
@@ -514,6 +518,28 @@ mod tests {
             p.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
             restored.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
         );
+    }
+
+    #[test]
+    fn island_generates_height_that_is_compatible_with_color_and_drainage() {
+        let mut project = Project::default();
+        let land = project.graph.add(NodeKind::Island {
+            seed: 1337, radius: 0.65, height: 1.2, roughness: 0.6,
+        });
+        let height = project.graph.evaluate_port(32, &PortRef::height(land)).unwrap();
+        assert_eq!(height.kind, PortType::Height);
+        assert_eq!(height.data.get(0, 0), 0.0);
+        let drain = project.graph.add(NodeKind::Drainage {
+            min_catchment_fraction: 0.01,
+        });
+        project.graph.connect(drain, 0, PortRef::height(land)).unwrap();
+        let surface = project.graph.add(NodeKind::Colorize {
+            low: [0.1, 0.2, 0.3], high: [0.8, 0.8, 0.9],
+            midpoint: 0.5, contrast: 1.0,
+        });
+        project.graph.connect(surface, 0, PortRef::height(land)).unwrap();
+        assert!(project.graph.evaluate_port(32, &PortRef::new(drain, "channels")).is_ok());
+        assert!(project.graph.evaluate_port(32, &PortRef::new(surface, "color")).is_ok());
     }
 
     #[test]
