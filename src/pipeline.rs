@@ -2,6 +2,7 @@
 //! Legacy JSON source node IDs are migrated transparently to named height ports.
 //! This module intentionally has no UI or GPU dependencies.
 use crate::hydrology::simulate;
+use crate::color::{ColorField, altitude_palette, color_blend};
 use crate::import::read_heightmap;
 use std::path::Path;
 use crate::geology::{mountain_range, crater, dunes, canyon, warp, curvature, aspect_mask, elevation_mask};
@@ -82,12 +83,13 @@ impl PortRef {
     }
 }
 
-/// Field-based output. This first milestone supports Height/Mask values.
-/// Remaining port types are reserved and cannot be wired until implemented.
+/// Typed terrain graph output. Scalar data is a luminance proxy only for
+/// Color ports; consumers must use the actual RGBA field for color export.
 #[derive(Debug, Clone)]
 pub struct FieldValue {
     pub kind: PortType,
     pub data: Arc<HeightField>,
+    pub color: Option<Arc<ColorField>>,
 }
 
 #[derive(Clone, Default)]
@@ -97,7 +99,19 @@ pub struct NodeOutputs {
 
 impl NodeOutputs {
     fn with(mut self, name: &str, kind: PortType, data: HeightField) -> Self {
-        self.fields.insert(name.to_string(), FieldValue { kind, data: Arc::new(data) });
+        self.fields.insert(name.to_string(), FieldValue {
+            kind, data: Arc::new(data), color: None,
+        });
+        self
+    }
+
+    fn with_color(mut self, name: &str, data: ColorField) -> Self {
+        let preview = data.luminance();
+        self.fields.insert(name.to_string(), FieldValue {
+            kind: PortType::Color,
+            data: Arc::new(preview),
+            color: Some(Arc::new(data)),
+        });
         self
     }
 
@@ -254,6 +268,12 @@ impl GraphCache {
                 if field.data.size != size || field.data.values.iter().any(|v| !v.is_finite()) {
                     return Err(format!("Node #{id} produced invalid '{name}' data"));
                 }
+                if field.kind == PortType::Color && field.color.as_ref().is_none_or(|color|
+                    color.size != size || color.pixels.len() != size * size
+                        || color.pixels.iter().any(|rgba| rgba.iter().any(|v| !v.is_finite()))
+                ) {
+                    return Err(format!("Node #{id} produced invalid RGBA color data"));
+                }
             }
             let output = Arc::new(output);
             self.entries.insert(id, Entry { key: fingerprint, value: output.clone() });
@@ -274,6 +294,7 @@ impl NodeKind {
     pub fn output_ports(&self) -> &'static [(&'static str, PortType)] {
         const HEIGHT: &[(&str, PortType)] = &[("height", PortType::Height)];
         const SLOPE: &[(&str, PortType)] = &[("slope", PortType::Mask)];
+        const COLOR: &[(&str, PortType)] = &[("color", PortType::Color)];
         const CURVATURE: &[(&str, PortType)] = &[("curvature", PortType::Mask)];
         const ASPECT: &[(&str, PortType)] = &[("aspect", PortType::Mask)];
         const ELEVATION: &[(&str, PortType)] = &[("mask", PortType::Mask)];
@@ -294,6 +315,7 @@ impl NodeKind {
             Self::Erosion { .. } => EROSION,
             Self::Hydraulic { .. } => HYDRAULIC,
             Self::Slope => SLOPE,
+            Self::Colorize { .. } | Self::ColorMixer { .. } => COLOR,
             Self::Curvature => CURVATURE,
             Self::Aspect { .. } => ASPECT,
             Self::ElevationMask { .. } => ELEVATION,
@@ -307,6 +329,9 @@ impl NodeKind {
              Self::Range { .. } | Self::Crater { .. } |
              Self::Dunes { .. } | Self::Canyon { .. }, _) => None,
             (Self::MaskedBlend { .. }, 2) => Some(PortType::Mask),
+            (Self::ColorMixer { .. }, 2) => Some(PortType::Mask),
+            (Self::ColorMixer { .. }, 0 | 1) => Some(PortType::Color),
+            (Self::Colorize { .. }, 0) => Some(PortType::Height),
             (Self::MaskedBlend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Blend { .. }, 0 | 1) => Some(PortType::Height),
             (Self::Erosion { .. } | Self::Hydraulic { .. } | Self::Terrace { .. } | Self::Blur { .. } | Self::Slope | Self::Curvature | Self::Aspect { .. } | Self::ElevationMask { .. } | Self::Warp { .. }, 0) => Some(PortType::Height),
@@ -333,6 +358,17 @@ fn evaluate_kind(
                 generate_mountain(size, *seed, *frequency, *height)),
         NodeKind::ImportHeight { path, scale } => NodeOutputs::default()
             .with("height", PortType::Height, read_heightmap(Path::new(path), size, *scale)?),
+        NodeKind::Colorize { low, high, midpoint, contrast } =>
+            NodeOutputs::default().with_color("color",
+                altitude_palette(take(0), *low, *high, *midpoint, *contrast)),
+        NodeKind::ColorMixer { mix } => {
+            let source_a = inputs[0].color.as_ref()
+                .ok_or("Color mixer requires first RGBA input")?;
+            let source_b = inputs[1].color.as_ref()
+                .ok_or("Color mixer requires second RGBA input")?;
+            NodeOutputs::default().with_color("color",
+                color_blend(source_a, source_b, take(2), *mix))
+        },
         NodeKind::Noise { seed, frequency, amplitude } =>
             NodeOutputs::default().with("height", PortType::Height,
                 generate_noise(size, *seed, *frequency, *amplitude)),
@@ -434,6 +470,39 @@ impl Graph {
 mod tests {
     use super::*;
     use crate::terrain::{Node, Project};
+
+    #[test]
+    fn color_nodes_use_actual_rgba_and_are_type_safe() {
+        let mut p = Project::default();
+        let sea = p.graph.add(NodeKind::Colorize {
+            low: [0.02, 0.15, 0.45], high: [0.9, 0.8, 0.6],
+            midpoint: 0.45, contrast: 1.0,
+        });
+        let land = p.graph.add(NodeKind::Colorize {
+            low: [0.1, 0.3, 0.1], high: [0.8, 0.85, 0.8],
+            midpoint: 0.5, contrast: 1.0,
+        });
+        let aspect = p.graph.add(NodeKind::Aspect {
+            azimuth: 90.0, half_width: 60.0, min_slope: 0.02,
+        });
+        let mixer = p.graph.add(NodeKind::ColorMixer { mix: 0.8 });
+        p.graph.connect(mixer, 0, PortRef::new(sea, "color")).unwrap();
+        p.graph.connect(mixer, 1, PortRef::new(land, "color")).unwrap();
+        p.graph.connect(mixer, 2, PortRef::new(aspect, "aspect")).unwrap();
+        let color = p.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap();
+        assert_eq!(color.kind, PortType::Color);
+        assert_eq!(color.color.as_ref().unwrap().pixels.len(), 1024);
+        assert!(color.color.unwrap().pixels.iter()
+            .all(|rgba| rgba.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))));
+        assert!(p.graph.connect(2, 0, PortRef::new(mixer, "color")).is_err());
+        assert!(p.graph.connect(mixer, 0, PortRef::height(1)).is_err());
+        let json = serde_json::to_string(&p).unwrap();
+        let restored: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            p.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
+            restored.graph.evaluate_port(32, &PortRef::new(mixer, "color")).unwrap().color,
+        );
+    }
 
     #[test]
     fn aspect_port_is_mask_and_connects_to_masked_blend() {
