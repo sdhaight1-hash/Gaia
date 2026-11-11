@@ -456,6 +456,11 @@ impl GaiaApp {
                 catchment_fraction: 0.002, width: 3.0,
                 depth: 0.045, grade: 0.0001,
             });
+        self.palette_node(ui, "≈  Lake",
+            "Fill enclosed basins to a shared water elevation and derive water/coverage maps",
+            NodeKind::Lake {
+                fill_fraction: 1.0, minimum_area: 4, minimum_depth: 0.01,
+            });
         self.palette_node(ui, "◫  Elevation Mask", "Select a height range with soft edges",
             NodeKind::ElevationMask { low: 0.25, high: 0.7, feather: 0.07 });
         self.palette_node(ui, "◩  Mask Levels", "Remap mask black/white points, gamma and invert",
@@ -810,6 +815,16 @@ impl GaiaApp {
                         .step_by(0.00001).text("Drainage grade")).changed();
                     ui.small("Global priority flood + D8 network + softened channel incision. All edges are potential outlets.");
                     ui.small("Outputs: carved Height, channels Mask, wear Mask. No water volume or sediment transport.");
+                }
+                NodeKind::Lake { fill_fraction, minimum_area, minimum_depth } => {
+                    changed |= ui.add(egui::Slider::new(fill_fraction, 0.0..=1.0)
+                        .text("Basin fill")).changed();
+                    changed |= ui.add(egui::Slider::new(minimum_area, 1..=10000)
+                        .text("Min basin area (pixels)")).changed();
+                    changed |= ui.add(egui::Slider::new(minimum_depth, 0.0..=1.0)
+                        .text("Min potential depth")).changed();
+                    ui.small("Closed-basin static water levels; no water flow, rainfall, or evolving sediment.");
+                    ui.small("Outputs: original terrain Height, surface Height, lake depth Water, coverage Mask.");
                 }
                 NodeKind::MaskLevels { black, white, gamma, invert } => {
                     changed |= ui.add(egui::Slider::new(black, 0.0..=1.0)
@@ -1336,7 +1351,7 @@ fn node_accent(kind: &NodeKind) -> egui::Color32 {
         NodeKind::Mountain { .. } | NodeKind::Island { .. } | NodeKind::Volcano { .. } | NodeKind::Noise { .. } | NodeKind::ImportHeight { .. } |
         NodeKind::Range { .. } | NodeKind::Crater { .. } |
         NodeKind::Dunes { .. } | NodeKind::Canyon { .. } => ui_theme::ACCENT,
-        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
+        NodeKind::Erosion { .. } | NodeKind::Hydraulic { .. } | NodeKind::Terrace { .. } | NodeKind::Stratify { .. } | NodeKind::Adjust { .. } | NodeKind::DepressionFill { .. } | NodeKind::Rivers { .. } | NodeKind::Lake { .. } | NodeKind::Blur { .. } => ui_theme::BLUE,
         NodeKind::Blend { .. } | NodeKind::MaskedBlend { .. } |
         NodeKind::Colorize { .. } | NodeKind::ColorMixer { .. } | NodeKind::Normals { .. } => ui_theme::AMBER,
         NodeKind::Slope | NodeKind::Curvature | NodeKind::Aspect { .. } | NodeKind::Drainage { .. } | NodeKind::MaskLevels { .. } | NodeKind::ElevationMask { .. } | NodeKind::Warp { .. } => ui_theme::BLUE,
